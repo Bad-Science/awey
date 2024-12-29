@@ -2,9 +2,12 @@
 
 Last is an actor-based full stack, client-rendered, batteries included framework for TypeScript.
 
-Last takes lessons from many years of web framework evolution, sourcing particular influece from Elixir, Phoenix, Rails, React, Zustand (around which our client state management is a wrapper), Meteor.js, and a love of the elegance and simplicity of actor programming, and the chaotic, immortal, lovable beast that is ECMAScript.
+It's a framework for people who love elixir and liveview, but want seamless end-to-end type safety and first class support for any React environment.
+
+Last takes lessons from many years of web framework evolution, sourcing particular influece from Elixir, Phoenix, Rails, React, Zustand (around which our client state management is a wrapper), Meteor.js, and a love of the elegance and simplicity of actor programming, and the chaotic, immortal, lovable beast that is the ECMAScript family.
 
 I hope you enjoy using it as much as I enjoyed creating it.
+
 
 ## Goals
 - Opinionated. There is a correct way to do just about anything you'd to do in a web app, and following those conventions
