@@ -24,13 +24,21 @@ type Handler<A,H> = H extends keyof A
   : never;
 
 // handler function nameds
-type MessageKeys<A extends Actor, PREFIX extends string> = {
-  [K in keyof A]: A[K] extends (...args: any) => any
-    ? K extends `${PREFIX}${infer M}`
-      ? M
-      : never
-    : never;
-}[keyof A];
+// type MessageKeys<A extends Actor, PREFIX extends string> = {
+//   [K in keyof A]: A[K] extends (...args: any) => any
+//     ? K extends `${PREFIX}${infer M}`
+//       ? M
+//       : never
+//     : never;
+// }[keyof A]
+
+type MessageKeys<A extends Actor, PREFIX extends string> = Extract<{
+  [K in keyof A]: A[K] extends (...args: any) => any 
+    ? K extends `${PREFIX}${infer M}` 
+      ? M 
+      : never 
+    : never
+}[keyof A], string>;
 
 /*****************************************************************************/
 /** Actor Messaging */
@@ -106,7 +114,6 @@ class ActorRealm {
   }
 }
 
-
 /*****************************************************************************/
 /** Actor Implementation with type-safe messaging */
 /*****************************************************************************/
@@ -154,8 +161,18 @@ export function pid<A extends Actor>(actor: A): Pid<A> {
 }
 
 export class Actor {
-  readonly self: Pid<typeof this>;
+  readonly self: Pid<this>;
   // readonly abstract Name: string;
+
+  protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
+    this.self = this.realm.__allocate(this);
+    const l = this.realm.__lookup(this.self);
+    const x = Actor.send(this.self as Pid<Actor>, 'ping', 'hello');
+    if (!l) {
+      throw new Error('failed to allocate self');
+    }
+    console.log('found self', l);
+  }
 
   static send<
     A extends Actor,
@@ -175,7 +192,7 @@ export class Actor {
     return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
-  send<
+  protected send<
     A extends Actor,
     K extends MessageKeys<A, PREFIX>,
     PREFIX extends string = DEFAULT_PREFIX,
@@ -193,19 +210,66 @@ export class Actor {
     return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
+  protected sendSelf<
+    K extends MessageKeys<this, PREFIX>,
+    PREFIX extends string = DEFAULT_PREFIX,
+    H = `${PREFIX}${K}`,
+    P = Parameters<Handler<this, H>>[0],
+    R = ReturnType<Handler<this, H>>
+  >(
+    key: K,
+    message: P extends AnyMessage ? P : never,
+    { prefix }: { prefix?: PREFIX } = { },
+    // pid: Pid<this> = this.self
+  ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? R : never> {
+    return Actor.send(this.self, key, message, { prefix }) as any;
+  }
+
+//   protected sendSelf<
+//   A extends Actor = this,  // Default A to this type
+//   K extends MessageKeys<A, PREFIX>,
+//   PREFIX extends string = DEFAULT_PREFIX,
+//   H = `${PREFIX}${K}`,
+//   P = Parameters<Handler<A, H>>[0],
+//   R = ReturnType<Handler<A, H>>
+// >(
+//   pid: Pid<A>,
+//   key: K,
+//   message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
+//   { prefix }: { prefix?: PREFIX } = { }
+// ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never>;
+
+  // protected send<
+  //   K extends MessageKeys<this, PREFIX>,
+  //   PREFIX extends string = DEFAULT_PREFIX,
+  //   H = `${PREFIX}${K}`,
+  //   P = Parameters<Handler<this, H>>[0],
+  //   R = ReturnType<Handler<this, H>>
+  // >(
+  //   pid: Pid<this>,
+  //   key: K,
+  //   message: P extends AnyMessage ? P : never,
+  //   options?: { prefix?: PREFIX }
+  // ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? R : never> {
+  //   return Actor.send(pid, key, message, options) as any;
+  // }
+
+  // protected sendSelf<
+  //   K extends MessageKeys<this, PREFIX>,
+  //   PREFIX extends string = DEFAULT_PREFIX,
+  //   H = `${PREFIX}${K}`,
+  //   P = Parameters<Handler<this, H>>[0],
+  //   R = ReturnType<Handler<this, H>>
+  // >(
+  //   key: K,
+  //   message: P extends AnyMessage ? Parameters<Handler<this, H>>[0] : never,
+  //   { prefix }: { prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
+  // ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<this, H>> : never> {
+  //   return this.send(this.self, key as any, message, { prefix }) as any;
+  // }
   
   getSelf<Self extends Actor>(): Pid<Self> {
     return this.self as unknown as Pid<Self>;
-  }
-
-  protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
-    this.self = this.realm.__allocate(this);
-    const l = this.realm.__lookup(this.self);
-    const x = Actor.send(pid(this) as Pid<Actor>, 'ping', 'hello');
-    if (!l) {
-      throw new Error('failed to allocate self');
-    }
-    console.log('found self', l);
   }
 
   private static ensurePromise<T>(value: T | Promise<T>): Promise<T> {

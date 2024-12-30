@@ -1,4 +1,4 @@
-import { Actor } from "./actor";
+import { Actor, Pid } from "./actor";
 // import { pid as  pid2 } from "./actor";
 
 function ActorMethod() {
@@ -14,9 +14,33 @@ function ActorMethod() {
   };
 }
 
+// Debug types
+type Debug1 = MessageKeys<MyActor, '_'>;
+type Debug2 = keyof MyActor;
+type Debug3 = MyActor['_Inc'] extends (...args: any) => any ? true : false;
+type Debug4 = {
+  [K in keyof MyActor]: K extends `_${infer M}` ? M : never
+}[keyof MyActor];
+type Debug5 = {
+  [K in keyof MyActor]: MyActor[K] extends (...args: any) => any 
+      ? K extends `_${infer M}` 
+          ? M 
+          : never 
+      : never;
+};
+type Debug6 = Extract<{
+  [K in keyof MyActor]: MyActor[K] extends (...args: any) => any 
+      ? K extends `_${infer M}` 
+          ? M 
+          : never 
+      : never;
+}[keyof MyActor], string>;
+
+
 // Example Actor Class
 // creat type wrapper for actor class to hide handers
 export default class MyActor extends Actor {
+
     private count = 0;
 
     constructor(initialCount: number) {
@@ -33,8 +57,12 @@ export default class MyActor extends Actor {
         return param * 2;
     }
 
-    _getPid(arg: string): Pid<MyActor> {
-        return this.self;
+    _getPid<MyActor>(arg: string)  { // BREAKS -- return evals to never
+        return this.self as unknown as Pid<MyActor>;
+    }
+
+    _getObj(): {x: number} {
+        return {x: 1};
     }
 
     // @ActorMethod()
@@ -42,9 +70,15 @@ export default class MyActor extends Actor {
       const l = this.realm.__lookup(this.self);
         console.log('dec received:', this.count -= by);
         const pid = this._getPid("hello");
-        const x = this.send(pid, 'Dec', by);
-        const z = Actor.send(pid, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
-        const myPid = await Actor.send(pid, 'getPid', "hello");
+        const x = this.send(this.self as Pid<MyActor>, 'Inc', by);
+        const z = await this.send(this.self, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
+        const myPid = this.send((this as MyActor).self, 'getPid', "hello");
+        // return this.count;
+
+        const actor = new MyActor(0);
+        const ap = actor.self;
+        const y = this.send(ap, 'Inc', by);
+
         return this.count;
     }
 
@@ -63,7 +97,7 @@ export default class MyActor extends Actor {
 }
 
 const actor = new MyActor(0);
-const pid2 = actor.self;
+const pid = actor.self;
 
 const z = Actor.send(pid, 'Foo', 'Hello, Actor!'); // valid
 const result = await Actor.send(pid, 'bar', 42); // valid
@@ -75,8 +109,6 @@ const result3 = Actor.send(pid, 'Inc', "1");
 console.log('Result from handleBar:', result);
 
 const incr = await Actor.send(pid, 'Inc', 1);
-
-const incr2 = await actor.send(pid, 'Inc', 1);
 
 
 
