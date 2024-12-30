@@ -1,4 +1,5 @@
 import { AsyncQueue } from './aq';
+import { isMainThread, threadId } from 'worker_threads';
 
 /*****************************************************************************/
 /** Messaging Types And Message Utility Types */
@@ -23,22 +24,13 @@ type Handler<A,H> = H extends keyof A
     : never
   : never;
 
-// handler function nameds
-// type MessageKeys<A extends Actor, PREFIX extends string> = {
-//   [K in keyof A]: A[K] extends (...args: any) => any
-//     ? K extends `${PREFIX}${infer M}`
-//       ? M
-//       : never
-//     : never;
-// }[keyof A]
-
-type MessageKeys<A extends Actor, PREFIX extends string> = Extract<{
-  [K in keyof A]: A[K] extends (...args: any) => any 
-    ? K extends `${PREFIX}${infer M}` 
-      ? M 
-      : never 
-    : never
-}[keyof A], string>;
+type MessageKeys<A extends Actor, PREFIX extends string> = {
+  [K in keyof A]: A[K] extends (...args: any) => any
+    ? K extends `${PREFIX}${infer M}`
+      ? M
+      : never
+    : never;
+}[keyof A]
 
 /*****************************************************************************/
 /** Actor Messaging */
@@ -50,13 +42,29 @@ type MessageKeys<A extends Actor, PREFIX extends string> = Extract<{
 /** Actor Identity and Registration (Actor Realms) */
 /*****************************************************************************/
 
-export type ActorId = string;
+export type ActorId = number;
 export type Pid<A> = {
-  id: ActorId;
+  localId: ActorId;
+  realmId: RealmId;
   __actorType?: A;
 };
 
 export type RealmId = number;
+
+// type ActorType<Type extends Actor> = (...args: any[]) => Type
+
+type ActorTypeName = string;
+
+type TypedActor<Type extends Actor> = {
+  type: ActorTypeName;
+  actor: Type;
+}
+
+type TypedActorKey<T extends Actor> = {
+  type: ActorTypeName;
+  key: ActorKey;
+  __actorType?: T;
+}
 
 /**
  * A realm is the heart of the actor system. It tracks ("allocates") all local actors.
@@ -64,23 +72,32 @@ export type RealmId = number;
  * it is eligible for garbage collection.
  * 
  * Generally, you should allocate one realm per thread in a multi-threaded actor system.
+ * 
+ * REMINDER: an individual Realm is NOT thread safe.
  */
-class ActorRealm {
+
+export class ActorRealm {
   public readonly realmId: RealmId;
   private readonly crypto: Crypto;
   private readonly actors: Map<ActorId, WeakRef<Actor>> = new Map();
+  private readonly registeredActors: Map<ActorId, TypedActor<any>> = new Map();
+  private readonly registry: Pid<Registry>;
+  private nextActorId: ActorId = 1;
 
   private static threadLocalInstance: ActorRealm;
-  static initThreadLocal(id: RealmId) {
-    this.threadLocalInstance = new ActorRealm(id);
-  }
-  static get threadLocal() {
-    return this.threadLocalInstance;
+  static initThreadLocal(registry: Pid<Registry>, id: RealmId = threadId) {
+    if (this.threadLocalInstance) {
+      throw new Error('ActorRealm.initThreadLocal can only be called once per thread');
+    }
+    this.threadLocalInstance = new ActorRealm(id, registry);
   }
 
-  constructor(realmId: RealmId) {
+  static get threadLocal() { return this.threadLocalInstance }
+
+  private constructor(realmId: RealmId, registry: Pid<Registry>) {
     this.realmId = realmId;
     this.crypto = new Crypto();
+    this.registry = registry;
   }
 
   /**
@@ -88,13 +105,10 @@ class ActorRealm {
    * @param actor - The actor to allocate a pid for.
    * @returns The pid of the actor.
    */
-  __allocate<Self extends Actor>(actor: Actor): Pid<Self> {
-    const pid = {
-      id: this.nextActorId(),
-      __actorType: void actor
-    }
+  __allocate<Self extends Actor>(actor: Self): Pid<Self> {
+    const pid = this.createPid(actor);
 
-    this.actors.set(pid.id, new WeakRef(actor));
+    this.actors.set(pid.localId, new WeakRef(actor));
     return pid;
   }
 
@@ -104,13 +118,50 @@ class ActorRealm {
    * @returns The actor if found, null if it has never existed recently, or undefined if it has been recently garbage collected.
    */
   __lookup<Self extends Actor>(pid: Pid<Self>): Self | null | undefined {
-    const maybeActor = this.actors.get(pid.id);
+    const maybeActor = this.actors.get(pid.localId);
     if (!maybeActor) return null;
     return maybeActor.deref() as (Self | undefined);
   }
 
-  private nextActorId(): ActorId {
-    return `${this.realmId}.${this.crypto.randomUUID()}`;
+  __findPid<Type extends Actor>(key: ActorKey): Promise<Pid<Type> | null> {
+    // different approach: Should we invert this? have actors not actually be subclasses but have static methods to send type-specific messages?
+    return Actor.send(this.registry, 'find', key);
+  }
+
+  async __find<Type extends Actor>(type: ActorTypeName | null, key: ActorKey): Promise<Type | null> {
+    const pid = await this.__findPid<any>(key);
+    if (!pid) return null;
+    const typedActor = this.registeredActors.get(pid.localId);
+    if (!typedActor) throw new Error('Actor is in registry but not in local realm');
+    const shouldTypeCheck = !!type;
+    if (shouldTypeCheck && typedActor.type !== type) throw new Error('Actor type mismatch');
+    return typedActor.actor;
+  }
+
+  async __register<Type extends Actor>(actorType: ActorTypeName, key: ActorKey, actor: Type): Promise<void> {
+    this.registeredActors.set(actor.self.localId, { type: actorType, actor });
+    try {
+      await Actor.send(this.registry, 'register', { pid: actor.self, key });
+    } catch (e) {
+      this.registeredActors.delete(actor.self.localId);
+      throw e;
+    }
+  }
+
+  private createPid<Self extends Actor>(actor: Self): Pid<Self> {
+    return {
+      localId: this.nextActorId++,
+      realmId: this.realmId,
+      __actorType: void actor
+    }
+  }
+}
+
+function pid<A extends Actor>(actor: A): Pid<A> {
+  return {
+    localId: actor.self.localId,
+    realmId: actor.self.realmId,
+    __actorType: void actor
   }
 }
 
@@ -153,25 +204,20 @@ class ActorRealm {
  * be very useful for performance critical applications, so we provide first-class support for them.
  */
 
-export function pid<A extends Actor>(actor: A): Pid<A> {
-  return {
-    id: actor.self.id,
-    __actorType: void actor
-  }
-}
+
 
 export class Actor {
-  readonly self: Pid<this>;
-  // readonly abstract Name: string;
+  declare readonly self: Pid<typeof this>;
+  private readonly mailbox: AsyncQueue;
 
   protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
+    this.mailbox = new AsyncQueue();
     this.self = this.realm.__allocate(this);
     const l = this.realm.__lookup(this.self);
-    const x = Actor.send(this.self as Pid<Actor>, 'ping', 'hello');
     if (!l) {
       throw new Error('failed to allocate self');
     }
-    console.log('found self', l);
+    console.debug(`Allocated actor:${this.self.localId} in realm:${this.realm.realmId}`);
   }
 
   static send<
@@ -182,14 +228,31 @@ export class Actor {
     P = Parameters<Handler<A, H>>[0],
     R = ReturnType<Handler<A, H>>
   >(
-    pid: Pid<A>,
+    id: Pid<A> | TypedActorKey<A>,
     key: K,
     message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
     { from, prefix }: { from?: A, prefix?: PREFIX } = { }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
     const realm = from?.realm ?? ActorRealm.threadLocal;
-    console.log(`Sending message to actor ${pid.id} in realm ${realm.realmId}:`, { key, message });
-    return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
+    // if (typeof id === 'string') { // registered actor
+    //   return realm.__find<any>(null, id).then((pid) => 
+    //     realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
+    //   ).catch((e) => {
+    //     console.error('failed to send message to actor', id, 'in realm', realm.realmId, 'error:', e);
+    //     throw e;
+    //   }) as any;
+    // }
+    if (typeof id === 'object' && 'type' in id && 'key' in id) { // registered actor
+      return realm.__find<A>(id.type, id.key).then((actor) => 
+        actor.receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
+      ).catch((e) => {
+        console.error('failed to send message to actor', id, 'in realm', realm.realmId, 'error:', e);
+        throw e;
+      }) as any;
+    }
+
+    console.log(`Sending message to actor ${id.localId} in realm ${realm.realmId}:`, { key, message });
+    return realm.__lookup(id).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
   protected send<
@@ -206,74 +269,16 @@ export class Actor {
     { prefix }: { prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
     const realm = this.realm
-    console.log(`Sending message to actor ${pid.id} in realm ${realm.realmId}:`, { key, message });
+    console.log(`Sending message to actor ${pid.localId} in realm ${realm.realmId}:`, { key, message });
     return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
-
-  protected sendSelf<
-    K extends MessageKeys<this, PREFIX>,
-    PREFIX extends string = DEFAULT_PREFIX,
-    H = `${PREFIX}${K}`,
-    P = Parameters<Handler<this, H>>[0],
-    R = ReturnType<Handler<this, H>>
-  >(
-    key: K,
-    message: P extends AnyMessage ? P : never,
-    { prefix }: { prefix?: PREFIX } = { },
-    // pid: Pid<this> = this.self
-  ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? R : never> {
-    return Actor.send(this.self, key, message, { prefix }) as any;
-  }
-
-//   protected sendSelf<
-//   A extends Actor = this,  // Default A to this type
-//   K extends MessageKeys<A, PREFIX>,
-//   PREFIX extends string = DEFAULT_PREFIX,
-//   H = `${PREFIX}${K}`,
-//   P = Parameters<Handler<A, H>>[0],
-//   R = ReturnType<Handler<A, H>>
-// >(
-//   pid: Pid<A>,
-//   key: K,
-//   message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
-//   { prefix }: { prefix?: PREFIX } = { }
-// ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never>;
-
-  // protected send<
-  //   K extends MessageKeys<this, PREFIX>,
-  //   PREFIX extends string = DEFAULT_PREFIX,
-  //   H = `${PREFIX}${K}`,
-  //   P = Parameters<Handler<this, H>>[0],
-  //   R = ReturnType<Handler<this, H>>
-  // >(
-  //   pid: Pid<this>,
-  //   key: K,
-  //   message: P extends AnyMessage ? P : never,
-  //   options?: { prefix?: PREFIX }
-  // ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? R : never> {
-  //   return Actor.send(pid, key, message, options) as any;
-  // }
-
-  // protected sendSelf<
-  //   K extends MessageKeys<this, PREFIX>,
-  //   PREFIX extends string = DEFAULT_PREFIX,
-  //   H = `${PREFIX}${K}`,
-  //   P = Parameters<Handler<this, H>>[0],
-  //   R = ReturnType<Handler<this, H>>
-  // >(
-  //   key: K,
-  //   message: P extends AnyMessage ? Parameters<Handler<this, H>>[0] : never,
-  //   { prefix }: { prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
-  // ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<this, H>> : never> {
-  //   return this.send(this.self, key as any, message, { prefix }) as any;
-  // }
   
   getSelf<Self extends Actor>(): Pid<Self> {
     return this.self as unknown as Pid<Self>;
   }
 
-  private static ensurePromise<T>(value: T | Promise<T>): Promise<T> {
-    return value instanceof Promise ? value : Promise.resolve(value);
+  public pid<Self extends Actor>(): Pid<Self> {
+    return this.self as unknown as Pid<Self>;
   }
 
   _ping(message: string): 'pong' {
@@ -281,7 +286,6 @@ export class Actor {
     return 'pong';
   }
 
-  private mailbox: AsyncQueue = new AsyncQueue();
   private receive(key: string, message: AnyMessage, { prefix }: { prefix: string }): Promise<AnyReturn> {
     const handler = this[`${prefix}${key}`];
     if (typeof handler === 'function') {
@@ -305,4 +309,51 @@ export class StrictBroadcastChannel<
   public postMessage(message: MessageType): void {
     return super.postMessage(message)
   }
+}
+
+// export abstract class TypedActor<T extends Actor> extends Actor {
+//   declare self: Pid<T>;
+// }
+
+
+/*****************************************************************************/
+/** Actor registration and naming */
+/*****************************************************************************/
+
+type ActorKey = string;
+// type ActorRegistration = {
+//   pid: Pid<any>;
+//   key: ActorKey;
+// }
+export class DuplicateActorKeyError extends Error {
+  constructor(key: ActorKey, pid: Pid<any>) {
+    super(`Duplicate actor key: ${key} on pid: ${pid.localId}`);
+  }
+}
+
+export class Registry extends Actor {
+  private pids: Map<ActorKey, Pid<any>> = new Map();
+
+  _register({pid, key}: {pid: Pid<any>, key: ActorKey}): void {
+    if (this.pids.has(key)) {
+      throw new DuplicateActorKeyError(key, pid);
+    }
+    this.pids.set(key, pid);
+  }
+
+  _find(key: ActorKey): Pid<any> | null {
+    return this.pids.get(key) ?? null;
+  }
+
+  _unregister(key: ActorKey): boolean {
+    return this.pids.delete(key);
+  }
+}
+
+/*****************************************************************************/
+/** Utility Functions */
+/*****************************************************************************/
+
+function ensurePromise<T>(value: T | Promise<T>): Promise<T> {
+  return value instanceof Promise ? value : Promise.resolve(value);
 }

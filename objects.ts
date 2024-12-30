@@ -14,38 +14,15 @@ function ActorMethod() {
   };
 }
 
-// Debug types
-type Debug1 = MessageKeys<MyActor, '_'>;
-type Debug2 = keyof MyActor;
-type Debug3 = MyActor['_Inc'] extends (...args: any) => any ? true : false;
-type Debug4 = {
-  [K in keyof MyActor]: K extends `_${infer M}` ? M : never
-}[keyof MyActor];
-type Debug5 = {
-  [K in keyof MyActor]: MyActor[K] extends (...args: any) => any 
-      ? K extends `_${infer M}` 
-          ? M 
-          : never 
-      : never;
-};
-type Debug6 = Extract<{
-  [K in keyof MyActor]: MyActor[K] extends (...args: any) => any 
-      ? K extends `_${infer M}` 
-          ? M 
-          : never 
-      : never;
-}[keyof MyActor], string>;
 
-
-// Example Actor Class
-// creat type wrapper for actor class to hide handers
-export default class MyActor extends Actor {
-
+class MyActor extends Actor {
     private count = 0;
 
     constructor(initialCount: number) {
       console.log('initial count:', initialCount);
         super(); // can we run some prototype reflection in the superconstructor to e.g. auto-subscribe to events?
+      this.realm.__register(MyActor.name, "MyActor2", this);
+      const myactor = this.realm.__find(MyActor.name, "MyActor2");
     }
 
     async _Foo(param: string): Promise<void> {
@@ -57,22 +34,21 @@ export default class MyActor extends Actor {
         return param * 2;
     }
 
-    _getPid<MyActor>(arg: string)  { // BREAKS -- return evals to never
-        return this.self as unknown as Pid<MyActor>;
+    _getPid(arg: string)  { // BREAKS -- return evals to never
+        return this.self;
     }
 
     _getObj(): {x: number} {
         return {x: 1};
     }
 
-    // @ActorMethod()
     _Inc (by: number): number {
       const l = this.realm.__lookup(this.self);
         console.log('dec received:', this.count -= by);
         const pid = this._getPid("hello");
         const x = this.send(this.self as Pid<MyActor>, 'Inc', by);
-        const z = await this.send(this.self, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
-        const myPid = this.send((this as MyActor).self, 'getPid', "hello");
+        const z = await this.send(this.self as Pid<MyActor>, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
+        const myPid = this.send(this.self as Pid<MyActor>, 'getPid', "hello"); //BREAKS
         // return this.count;
 
         const actor = new MyActor(0);
@@ -95,6 +71,8 @@ export default class MyActor extends Actor {
         console.log('room event:', room, user);
     }
 }
+
+const x = MyActor.name;
 
 const actor = new MyActor(0);
 const pid = actor.self;

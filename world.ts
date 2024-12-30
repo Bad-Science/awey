@@ -1,5 +1,5 @@
 import { Chroma } from "./chroma";
-import { Actor } from "./objects";
+import { Actor } from "./actor";
 export type Coord = {x: number, y: number};
 export type PlayerId = number;
 export type ItemId = "green" | "red" | "blue" | "gold-shimmer";
@@ -10,7 +10,6 @@ export type Item = {
     description: string,
     maxQuantity: number
 };
-
 
 export type Paint = Item & {
     chroma: Chroma

@@ -1,4 +1,4 @@
-import { Actor } from "./actor";
+import { Actor, Pid } from "./actor";
 import { Zone } from "./world";
 
 export type BufferId = string;
