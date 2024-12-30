@@ -1,11 +1,16 @@
-import { Actor, AnyMessage } from "./objects";
+import { Actor, AnyMessage } from "./actor";
 import { Zone, PlayerId, Coord, MoveResult } from "./world";
-abstract class Channel extends Actor {
-    protected push(message: string): void {
-        console.log('pushing message:', message);
+abstract class Channel<T extends Channel<T>> extends Actor<Channel<T>> {
+    constructor() {
+        super();
     }
 
-    __message(message: string, ): void {
+    protected push(message: string): void {
+        console.log('pushing message:', message);
+        Actor.send(this.self, 'connect', message);
+    }
+
+    __message(message: string): void {
         console.log('message received:', message);
         // delegate to sublass handler. can be untyped internally but typed externally via the router.
         if (this[`on${message}`]) {
@@ -13,17 +18,18 @@ abstract class Channel extends Actor {
         }
     }
 
-    protected _connect(...args: any[]): void {
+    _connect(...args: any[]): void {
         console.log('connect received:', args);
+        this.push('connected');
     }
+
     protected abstract _disconnect(...args: any[]): void;
-    
 }
 
 
 // Chunks / instances are actors, owned by the world actor.
 // The world actor delegates actions to the appropriate chunk actor, like a dynamic supervisor.
-export class SharedWorld extends Actor {
+export class SharedWorld extends Actor<SharedWorld> {
     private zone: Zone;
 
     onGetPlayerPosition(id: PlayerId): Coord | null {
@@ -55,12 +61,15 @@ type MyPubSub = {
 }
 
 // API for creating a new channel has typed params that get passed to the constructor.
-export class PlayerChannel extends Channel {
+export class PlayerChannel<T extends PlayerChannel<T>> extends Channel<PlayerChannel<T>> {
     // TODO: Named actor registry, for world and chunk access by name instead of pid.
     constructor(private world: Pid<SharedWorld>, private id: PlayerId, private worldId: string) {
         super();
         this.subscribe<MyPubSub>(`world$${worldId}`);
         this.publish<WorldPubSub>('world', 'Move', {id: this.id, position: {x: 0, y: 0}});
+        // Actor.send(this.self, 'move',  {x: 0, y: 0}, {prefix: '_'});
+        this.send(this.self, 'move',  {x: 0, y: 0});
+        this.send(this.self, 'connect',  {x: 0, y: 0});
     }
 
     // protected onConnect({id}: {id: string}): void {
@@ -78,6 +87,10 @@ export class PlayerChannel extends Channel {
             console.log('move blocked');
         }
         return result;
+    }
+
+    _connect(c: Coord): void {
+        console.log('connect received:', c);
     }
 }
 

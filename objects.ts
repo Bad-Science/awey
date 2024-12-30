@@ -2,7 +2,7 @@ import { Actor } from "./actor";
 
 // Example Actor Class
 // creat type wrapper for actor class to hide handers
-export default class MyActor extends Actor {
+export default class MyActor extends Actor<MyActor> {
     private count = 0;
 
     constructor(initialCount: number) {
@@ -20,9 +20,10 @@ export default class MyActor extends Actor {
     }
 
     _Inc (by: number): number {
+      const l = this.realm.__lookup(this.self);
         console.log('dec received:', this.count -= by);
-        this.send(this.self<MyActor>(), 'Inc', by);
-        Actor.send(this.self<MyActor>(), 'Inc', by);
+        const x = this.send(this.self, 'Inc', by);
+        Actor.send(this.self, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
         return this.count;
     }
 
@@ -31,7 +32,7 @@ export default class MyActor extends Actor {
         return this.count;
     }
 
-    onEvent$room (room: string, user: string): void {
+    onEvent$room ({room, user}: {room: string, user: string}): void {
         console.log('room event:', room, user);
     }
     // subEvent = ...
@@ -41,7 +42,7 @@ export default class MyActor extends Actor {
 }
 
 const actor = new MyActor(0);
-const pid = actor.pid;
+const pid = actor.self;
 
 const z = Actor.send(pid, 'Foo', 'Hello, Actor!'); // valid
 const result = await Actor.send(pid, 'bar', 42); // valid

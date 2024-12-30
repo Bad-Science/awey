@@ -24,7 +24,7 @@ type Handler<A,H> = H extends keyof A
   : never;
 
 // handler function nameds
-type MessageKeys<A extends Actor, PREFIX extends string> = {
+type MessageKeys<A extends Actor<A>, PREFIX extends string> = {
   [K in keyof A]: A[K] extends (...args: any) => any
     ? K extends `${PREFIX}${infer M}`
       ? M
@@ -37,21 +37,6 @@ type MessageKeys<A extends Actor, PREFIX extends string> = {
 /*****************************************************************************/
 
 
-
-// type Send<
-//   A extends Actor,
-//   K extends MessageKeys<A, PREFIX>,
-//   PREFIX extends string = DEFAULT_PREFIX,
-//   P = Parameters<Handler<A, `${PREFIX}${K}`>>[0],
-//   R = ReturnType<Handler<A, `${PREFIX}${K}`>>,
-
-// > = (
-//   pid: Pid<A>,
-//   key: K,
-//   message: P extends AnyMessage ? Parameters<Handler<A, `${PREFIX}${K}`>>[0] : never,
-//   options?: {prefix: PREFIX} = {prefix: DEFAULT_PREFIX}
-// ) =>
-//   R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, `${PREFIX}${K}`>> : never>;
 
 /*****************************************************************************/
 /** Actor Identity and Registration (Actor Realms) */
@@ -75,7 +60,7 @@ export type RealmId = number;
 class ActorRealm {
   public readonly realmId: RealmId;
   private readonly crypto: Crypto;
-  private readonly actors: Map<ActorId, WeakRef<Actor>> = new Map();
+  private readonly actors: Map<ActorId, WeakRef<Actor<any>>> = new Map();
 
   private static threadLocalInstance: ActorRealm;
   static initThreadLocal(id: RealmId) {
@@ -95,7 +80,7 @@ class ActorRealm {
    * @param actor - The actor to allocate a pid for.
    * @returns The pid of the actor.
    */
-  __allocate<A extends Actor>(actor: A): Pid<A> {
+  __allocate<Self extends Actor<Self>>(actor: Actor<Self>): Pid<Self> {
     const pid = {
       id: this.nextActorId(),
       __actorType: void actor
@@ -110,10 +95,10 @@ class ActorRealm {
    * @param pid - The pid of the actor to lookup.
    * @returns The actor if found, null if it has never existed recently, or undefined if it has been recently garbage collected.
    */
-  __lookup<A extends Actor>(pid: Pid<A>): A | null | undefined {
+  __lookup<Self extends Actor<Self>>(pid: Pid<Self>): Self | null | undefined {
     const maybeActor = this.actors.get(pid.id);
     if (!maybeActor) return null;
-    return maybeActor.deref() as (A | undefined);
+    return maybeActor.deref() as (Self | undefined);
   }
 
   private nextActorId(): ActorId {
@@ -121,10 +106,6 @@ class ActorRealm {
   }
 }
 
-type ActorLike = {
-  self: Pid<any extends Actor ? any : never>;
-  realm: ActorRealm;
-}
 
 /*****************************************************************************/
 /** Actor Implementation with type-safe messaging */
@@ -164,121 +145,69 @@ type ActorLike = {
  * At present, the only way to share memory between threads is through SharedArrayBuffers, and this can still
  * be very useful for performance critical applications, so we provide first-class support for them.
  */
-export class Actor {
+export class Actor<Self extends Actor<Self>> {
+  readonly self: Pid<Self>;
+
   static send<
-      A extends Actor,
-      K extends MessageKeys<A, PREFIX>,
-      PREFIX extends string = DEFAULT_PREFIX,
-      H = `${PREFIX}${K}`,
-      P = Parameters<Handler<A, H>>[0],
-      R = ReturnType<Handler<A, H>>
+    A extends Actor<any>,
+    K extends MessageKeys<A, PREFIX>,
+    PREFIX extends string = DEFAULT_PREFIX,
+    H = `${PREFIX}${K}`,
+    P = Parameters<Handler<A, H>>[0],
+    R = ReturnType<Handler<A, H>>
   >(
-      pid: Pid<A>,
-      key: K,
-      message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
-      from?: A
+    pid: Pid<A>,
+    key: K,
+    message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
+    { from, prefix }: { from?: A, prefix?: PREFIX } = { }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
-      const realm = from?.realm ?? ActorRealm.threadLocal;
-      console.log(`Sending message to actor ${pid.id} in realm ${realm.realmId}:`, { key, message });
-      return realm.__lookup(pid).receive(key, message) as any;
+    const realm = from?.realm ?? ActorRealm.threadLocal;
+    console.log(`Sending message to actor ${pid.id} in realm ${realm.realmId}:`, { key, message });
+    return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
-  public readonly pid: Pid<typeof this>;
-  private pidGuard<A extends Actor>(): asserts this is A {}
-  self<A extends Actor>(): Pid<A> {
-    this.pidGuard<A>();
-    return this.pid;
+  send<
+    A extends Actor<any>,
+    K extends MessageKeys<A, PREFIX>,
+    PREFIX extends string = DEFAULT_PREFIX,
+    H = `${PREFIX}${K}`,
+    P = Parameters<Handler<A, H>>[0],
+    R = ReturnType<Handler<A, H>>
+  >(
+    pid: Pid<A>,
+    key: K,
+    message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
+    { prefix }: { prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
+  ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
+    const realm = this.realm
+    console.log(`Sending message to actor ${pid.id} in realm ${realm.realmId}:`, { key, message });
+    return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
-  protected constructor(private readonly realm: ActorRealm = ActorRealm.threadLocal) {
-    this.pid = realm.__allocate(this);
+
+  protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
+    this.self = this.realm.__allocate(this);
+    const l = this.realm.__lookup(this.self);
+    Actor.send(this.self, 'ping', 'hello');
+    if (!l) {
+      throw new Error('failed to allocate self');
+    }
+    console.log('found self', l);
   }
 
   private static ensurePromise<T>(value: T | Promise<T>): Promise<T> {
     return value instanceof Promise ? value : Promise.resolve(value);
   }
 
-//   protected send<
-//     PREFIX extends string,
-//     K extends MessageKeys<this>,
-//     P = Parameters<Handler<this, `${PREFIX}${K}`>>[0],
-//     R = ReturnType<Handler<this, `${PREFIX}${K}`>>
-//   >(
-//     pid: Pid<this>,
-//     key: K,
-//     message: P extends AnyMessage ? Parameters<Handler<this, `${PREFIX}${K}`>>[0] : never,
-//   ): Promise<ReturnType<Handler<this, `${PREFIX}${K}`>>> {
-//     return Actor.send(pid, key, message, this);
-//   }
-
-  send: typeof Actor.send = (...args) => {
-    const [to, key, message] = args;
-    return Actor.send(to, key, message, this as any);
+  _ping(message: string): void {
+    console.log('ping', message);
   }
 
-  // private broadcastChannels: Map<string, BroadcastChannel> = new Map();
-  // private getBroadcastChannel(topic: string): BroadcastChannel {
-  //   let channel = this.broadcastChannels.get(topic);
-  //   if (!channel) {
-  //     channel = new BroadcastChannel(topic);
-  //     this.broadcastChannels.set(topic, channel);
-  //   }
-  //   return channel;
-  // }
-
-  // protected publish<
-  //   // A extends Actor,
-  //   K extends MessageKeys<typeof this>,
-  //   H = `${PREFIX}${K}`,
-  //   P = Parameters<Handler<typeof this, H>>[0],
-  //   R = ReturnType<Handler<typeof this, H>>
-  // >(topic: string, key: K, message: P extends AnyMessage ? Parameters<Handler<typeof this, H>>[0] : never) {
-  //   const channel = this.getBroadcastChannel(topic);
-  //   channel.postMessage({key, message});
-  // }
-
-  // protected subscribe<T extends PubSub<typeof this>>(topic: string, key: keyof T, handler: (message: T[keyof T]) => void) {
-  //   const channel = this.getBroadcastChannel(topic);
-  //   channel.onmessage = (event) => {
-  //     if (event.data.key === key) {
-  //       handler(event.data.message);
-  //     }
-  //   };
-  // }
-
-  // protected subscribe<P extends any>(topic: string, key: keyof P, handler: (message: P[keyof P]) => void) {
-  //   const channel = this.getBroadcastChannel(topic);
-  //   channel.onmessage = (event) => {
-  //     if (event.data.key === key) {
-  //       handler(event.data.message);
-  //     }
-  //   };
-  // }
-
-  // protected subscribe<
-  //   P extends any,
-  //   T extends string,
-  //   K extends MessageKeys<typeof this>,
-  //   H = `${PREFIX}${K}`,
-  //   M = Parameters<Handler<typeof this, H>>[0],
-  //   R = ReturnType<Handler<typeof this, H>>
-  // >(topic: T) {
-  //   const channel = this.getBroadcastChannel(topic);
-  //   channel.onmessage = (event) => {
-  //     if (event.data.key && typeof this[event.data.key] === 'function') {
-  //       this.send(this.pid, event.data.key, event.data.message);
-  //     }
-  //     else {
-  //       console.error('no handler for', event.data.key, 'on', topic, 'to', this.pid);
-  //     }
-  //   };
-  // }
-
   private mailbox: AsyncQueue = new AsyncQueue();
-  private receive(key: string, message: AnyMessage): Promise<AnyReturn> {
-    // Async queue goes here.
-    if (typeof this[key] === 'function') {
-      return this.mailbox.enqueue((m) => this[key](m), [message]);
+  private receive(key: string, message: AnyMessage, { prefix }: { prefix: string }): Promise<AnyReturn> {
+    const handler = this[`${prefix}${key}`];
+    if (typeof handler === 'function') {
+      return this.mailbox.enqueue((m) => handler(m), [message]);
     }
     else {
       console.error('no handler for', key, 'on', this.self);
@@ -299,11 +228,3 @@ export class StrictBroadcastChannel<
     return super.postMessage(message)
   }
 }
-
-
-// export type PubSub<T> = {
-//   [K in keyof T]: T[K] extends (...args: any[]) => void
-//     ? K
-//     : never;
-// }
-

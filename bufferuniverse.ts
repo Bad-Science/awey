@@ -8,54 +8,53 @@ export type Buffer = {
 }
 export type BufferKey = { id: BufferId };
 
-class BufferUniverse extends Actor {
+export class BufferUniverse extends Actor<BufferUniverse> {
     #buffers: WeakMap<BufferKey, Buffer> = new WeakMap();
     #bufferKeys: BufferKey[] = [];
 
     _findOrLoad(id: BufferId): Buffer {
         let buffer: Buffer | undefined;
-        if (buffer = this.#buffers.get(this.#bufferKey(id))) {
+        if (buffer = this.#buffers.get(this.bufferKey(id))) {
             return buffer;
         } else {
-            return this.#loadBuffer(id);
+            return this.loadBuffer(id);
         }
     }
 
     async _save(id: BufferId): Promise<void> {
         // enhancement: save froma write actor on another thread.
-        const buffer = this.#buffers.get(this.#bufferKey(id));
+        const buffer = this.#buffers.get(this.bufferKey(id));
         if (!buffer) {
             throw new Error(`Buffer ${id} does not exist`);
         }
-        await this.#saveBufferToDisk(buffer);
+        await this.saveBufferToDisk(buffer);
     }
 
     async _saveAll(): Promise<void> {
         for (const key of this.#bufferKeys) {
-            const x = this.self;
-            await this.send(this.pid, 'save', key.id);
+            await this.send(this.self, 'save', key.id);
         }
     }
 
-    #loadBuffer(id: BufferId): Buffer {
+    private loadBuffer(id: BufferId): Buffer {
         const bufferExists = false;
         if (!bufferExists) {
-            return this.#createBuffer(id);
+            return this.createBuffer(id);
         } else {
-            return this.#createBuffer(id);
+            return this.createBuffer(id);
         }
     }
 
-    #createBuffer(id: BufferId): Buffer {
+    private createBuffer(id: BufferId): Buffer {
         return {
             id,
             data: new SharedArrayBuffer(1024)
         }
     }
 
-    async #saveBufferToDisk(buffer: Buffer): Promise<void> {
+    private async saveBufferToDisk(buffer: Buffer): Promise<void> {
         // enhancement: save to disk on another thread.
     }
 
-    #bufferKey(id: BufferId): BufferKey { return { id } }
+    private bufferKey(id: BufferId): BufferKey { return { id } }
 }
