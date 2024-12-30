@@ -1,13 +1,13 @@
 import { Actor, AnyMessage } from "./actor";
 import { Zone, PlayerId, Coord, MoveResult } from "./world";
-abstract class Channel<T extends Channel<T>> extends Actor<Channel<T>> {
+abstract class Channel extends Actor {
     constructor() {
         super();
     }
 
     protected push(message: string): void {
         console.log('pushing message:', message);
-        Actor.send(this.self, 'connect', message);
+        Actor.send(this.self as Pid<Channel>, 'connect', message);
     }
 
     __message(message: string): void {
@@ -29,7 +29,7 @@ abstract class Channel<T extends Channel<T>> extends Actor<Channel<T>> {
 
 // Chunks / instances are actors, owned by the world actor.
 // The world actor delegates actions to the appropriate chunk actor, like a dynamic supervisor.
-export class SharedWorld extends Actor<SharedWorld> {
+export class SharedWorld extends Actor {
     private zone: Zone;
 
     onGetPlayerPosition(id: PlayerId): Coord | null {
@@ -61,15 +61,18 @@ type MyPubSub = {
 }
 
 // API for creating a new channel has typed params that get passed to the constructor.
-export class PlayerChannel<T extends PlayerChannel<T>> extends Channel<PlayerChannel<T>> {
+export class PlayerChannel extends Channel {
+    static Self(): Pid<PlayerChannel> {
+        return this.self as Pid<PlayerChannel>;
+    }
     // TODO: Named actor registry, for world and chunk access by name instead of pid.
     constructor(private world: Pid<SharedWorld>, private id: PlayerId, private worldId: string) {
         super();
         this.subscribe<MyPubSub>(`world$${worldId}`);
         this.publish<WorldPubSub>('world', 'Move', {id: this.id, position: {x: 0, y: 0}});
         // Actor.send(this.self, 'move',  {x: 0, y: 0}, {prefix: '_'});
-        this.send(this.self, 'move',  {x: 0, y: 0});
-        this.send(this.self, 'connect',  {x: 0, y: 0});
+        this.send(this.self as Pid<PlayerChannel>, 'move',  {x: 0, y: 0});
+        this.send(this.self as Pid<PlayerChannel>, 'connect',  {x: 0, y: 0});
     }
 
     // protected onConnect({id}: {id: string}): void {

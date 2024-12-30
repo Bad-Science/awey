@@ -24,7 +24,7 @@ type Handler<A,H> = H extends keyof A
   : never;
 
 // handler function nameds
-type MessageKeys<A extends Actor<A>, PREFIX extends string> = {
+type MessageKeys<A extends Actor, PREFIX extends string> = {
   [K in keyof A]: A[K] extends (...args: any) => any
     ? K extends `${PREFIX}${infer M}`
       ? M
@@ -60,7 +60,7 @@ export type RealmId = number;
 class ActorRealm {
   public readonly realmId: RealmId;
   private readonly crypto: Crypto;
-  private readonly actors: Map<ActorId, WeakRef<Actor<any>>> = new Map();
+  private readonly actors: Map<ActorId, WeakRef<Actor>> = new Map();
 
   private static threadLocalInstance: ActorRealm;
   static initThreadLocal(id: RealmId) {
@@ -80,7 +80,7 @@ class ActorRealm {
    * @param actor - The actor to allocate a pid for.
    * @returns The pid of the actor.
    */
-  __allocate<Self extends Actor<Self>>(actor: Actor<Self>): Pid<Self> {
+  __allocate<Self extends Actor>(actor: Actor): Pid<Self> {
     const pid = {
       id: this.nextActorId(),
       __actorType: void actor
@@ -95,7 +95,7 @@ class ActorRealm {
    * @param pid - The pid of the actor to lookup.
    * @returns The actor if found, null if it has never existed recently, or undefined if it has been recently garbage collected.
    */
-  __lookup<Self extends Actor<Self>>(pid: Pid<Self>): Self | null | undefined {
+  __lookup<Self extends Actor>(pid: Pid<Self>): Self | null | undefined {
     const maybeActor = this.actors.get(pid.id);
     if (!maybeActor) return null;
     return maybeActor.deref() as (Self | undefined);
@@ -145,11 +145,20 @@ class ActorRealm {
  * At present, the only way to share memory between threads is through SharedArrayBuffers, and this can still
  * be very useful for performance critical applications, so we provide first-class support for them.
  */
-export class Actor<Self extends Actor<Self>> {
-  readonly self: Pid<Self>;
+
+export function pid<A extends Actor>(actor: A): Pid<A> {
+  return {
+    id: actor.self.id,
+    __actorType: void actor
+  }
+}
+
+export class Actor {
+  readonly self: Pid<typeof this>;
+  // readonly abstract Name: string;
 
   static send<
-    A extends Actor<any>,
+    A extends Actor,
     K extends MessageKeys<A, PREFIX>,
     PREFIX extends string = DEFAULT_PREFIX,
     H = `${PREFIX}${K}`,
@@ -167,7 +176,7 @@ export class Actor<Self extends Actor<Self>> {
   }
 
   send<
-    A extends Actor<any>,
+    A extends Actor,
     K extends MessageKeys<A, PREFIX>,
     PREFIX extends string = DEFAULT_PREFIX,
     H = `${PREFIX}${K}`,
@@ -184,11 +193,15 @@ export class Actor<Self extends Actor<Self>> {
     return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
   }
 
+  
+  getSelf<Self extends Actor>(): Pid<Self> {
+    return this.self as unknown as Pid<Self>;
+  }
 
   protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
     this.self = this.realm.__allocate(this);
     const l = this.realm.__lookup(this.self);
-    Actor.send(this.self, 'ping', 'hello');
+    const x = Actor.send(pid(this) as Pid<Actor>, 'ping', 'hello');
     if (!l) {
       throw new Error('failed to allocate self');
     }
@@ -199,8 +212,9 @@ export class Actor<Self extends Actor<Self>> {
     return value instanceof Promise ? value : Promise.resolve(value);
   }
 
-  _ping(message: string): void {
+  _ping(message: string): 'pong' {
     console.log('ping', message);
+    return 'pong';
   }
 
   private mailbox: AsyncQueue = new AsyncQueue();

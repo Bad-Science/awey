@@ -8,7 +8,7 @@ export type Buffer = {
 }
 export type BufferKey = { id: BufferId };
 
-export class BufferUniverse extends Actor<BufferUniverse> {
+export class BufferUniverse extends Actor {
     #buffers: WeakMap<BufferKey, Buffer> = new WeakMap();
     #bufferKeys: BufferKey[] = [];
 
@@ -32,7 +32,7 @@ export class BufferUniverse extends Actor<BufferUniverse> {
 
     async _saveAll(): Promise<void> {
         for (const key of this.#bufferKeys) {
-            await this.send(this.self, 'save', key.id);
+            await Actor.send(this.self as Pid<BufferUniverse>, 'save', key.id);
         }
     }
 

@@ -1,8 +1,22 @@
 import { Actor } from "./actor";
+// import { pid as  pid2 } from "./actor";
+
+function ActorMethod() {
+  return function (
+    originalMethod: any,
+    context: ClassMethodDecoratorContext
+  ) {
+    return function (this: any, ...args: any[]) {
+      // Cache the typed pid to avoid repeated casts
+      const typedPid = this.self as Pid<typeof this>;
+      return originalMethod.apply(this, args);
+    };
+  };
+}
 
 // Example Actor Class
 // creat type wrapper for actor class to hide handers
-export default class MyActor extends Actor<MyActor> {
+export default class MyActor extends Actor {
     private count = 0;
 
     constructor(initialCount: number) {
@@ -19,11 +33,18 @@ export default class MyActor extends Actor<MyActor> {
         return param * 2;
     }
 
+    _getPid(arg: string): Pid<MyActor> {
+        return this.self;
+    }
+
+    // @ActorMethod()
     _Inc (by: number): number {
       const l = this.realm.__lookup(this.self);
         console.log('dec received:', this.count -= by);
-        const x = this.send(this.self, 'Inc', by);
-        Actor.send(this.self, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
+        const pid = this._getPid("hello");
+        const x = this.send(pid, 'Dec', by);
+        const z = Actor.send(pid, 'Event$room', {room: 'test', user: 'test'}, {prefix: 'on'});
+        const myPid = await Actor.send(pid, 'getPid', "hello");
         return this.count;
     }
 
@@ -42,7 +63,7 @@ export default class MyActor extends Actor<MyActor> {
 }
 
 const actor = new MyActor(0);
-const pid = actor.self;
+const pid2 = actor.self;
 
 const z = Actor.send(pid, 'Foo', 'Hello, Actor!'); // valid
 const result = await Actor.send(pid, 'bar', 42); // valid
