@@ -12,6 +12,16 @@ export class BufferUniverse extends Actor {
     #buffers: WeakMap<BufferKey, Buffer> = new WeakMap();
     #bufferKeys: BufferKey[] = [];
 
+    constructor() {
+        super();
+        // Sending a message to self in the constructor guarentees that message will be processed before any other messages are received.
+        Actor.send(this.self as Pid<BufferUniverse>, '_init', null);
+    }
+
+    async __init() {
+        await this.realm.__register(BufferUniverse.name, "BufferUnimatrix01", this);
+    }
+
     _findOrLoad(id: BufferId): Buffer {
         let buffer: Buffer | undefined;
         if (buffer = this.#buffers.get(this.bufferKey(id))) {

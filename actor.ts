@@ -11,7 +11,7 @@ type JSONValue = JSONPrimitive | JSONObject | JSONArray;
 type JSONObject = { [key: string]: JSONValue };
 type JSONArray = JSONValue[];
 
-export type AnyMessage = JSONValue;
+export type AnyMessage = JSONValue | SharedArrayBuffer;
 export type AnyReturn = JSONValue | void;
 
 export const DEFAULT_PREFIX = '_';
@@ -234,25 +234,20 @@ export class Actor {
     { from, prefix }: { from?: A, prefix?: PREFIX } = { }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
     const realm = from?.realm ?? ActorRealm.threadLocal;
-    // if (typeof id === 'string') { // registered actor
-    //   return realm.__find<any>(null, id).then((pid) => 
-    //     realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
-    //   ).catch((e) => {
-    //     console.error('failed to send message to actor', id, 'in realm', realm.realmId, 'error:', e);
-    //     throw e;
-    //   }) as any;
-    // }
+    let actor: Promise<A | null>;
     if (typeof id === 'object' && 'type' in id && 'key' in id) { // registered actor
-      return realm.__find<A>(id.type, id.key).then((actor) => 
-        actor.receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
-      ).catch((e) => {
-        console.error('failed to send message to actor', id, 'in realm', realm.realmId, 'error:', e);
-        throw e;
-      }) as any;
+      actor = realm.__find<A>(id.type, id.key);
+    } else {
+      actor = Promise.resolve(realm.__lookup<A>(id));
     }
-
-    console.log(`Sending message to actor ${id.localId} in realm ${realm.realmId}:`, { key, message });
-    return realm.__lookup(id).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
+    return actor.then((actor) => {
+      if (!actor) throw new Error(`Actor ${id} not found in realm ${realm.realmId}`);
+      console.log(`Sending message to actor ${id} in realm ${realm.realmId}:`, { key, message });
+      return actor.receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
+    }).catch((e) => {
+      console.error(`Failed to send message to actor ${id} in realm ${realm.realmId}`, { key, message });
+      throw e;
+    }) as any;
   }
 
   protected send<
