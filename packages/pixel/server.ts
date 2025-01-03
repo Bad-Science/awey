@@ -1,4 +1,4 @@
-import { Actor, AnyMessage, Pid } from "./actor";
+import { Actor, AnyMessage, Pid } from "../actor/actor";
 import { Zone, PlayerId, Coord, MoveResult } from "./world";
 
 abstract class Channel extends Actor {
@@ -23,6 +23,8 @@ abstract class Channel extends Actor {
         console.log('connect received:', args);
         this.push('connected');
     }
+
+    public open?: () => void;
 
     protected abstract _disconnect(...args: any[]): void;
 }

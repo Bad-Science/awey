@@ -1,6 +1,6 @@
-import { ActorRealm, Registry } from "./actor";
-import { BufferUniverse } from "./bufferuniverse";
-import { actorSystem } from "./actor";
+import { ActorRealm, Registry } from "./packages/actor/actor";
+import { BufferUniverse } from "./packages/pixel/bufferuniverse";
+import { actorSystem } from "./packages/actor/actor";
 
 const bufferRealm = () => {
     const bufferUniverse = new BufferUniverse();

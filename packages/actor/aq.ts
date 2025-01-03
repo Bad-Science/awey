@@ -8,6 +8,7 @@ type QueueItem<ArgsType extends any[], RetType> = {
 
 export class AsyncQueue {
   private head: QueueItem<any[], any> | null = null;
+  private tail: QueueItem<any[], any> | null = null;
 
   public enqueue<ArgsType extends any[], RetType>(func: (...args: ArgsType) => Promise<RetType> | RetType, args: ArgsType): Promise<RetType> {
     return new Promise<RetType>((resolve, reject) => {

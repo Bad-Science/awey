@@ -1,5 +1,5 @@
-import { Chroma } from "./chroma";
-import { Actor } from "./actor";
+import { Chroma } from "../../chroma";
+import { Actor } from "../actor/actor";
 export type Coord = {x: number, y: number};
 export type PlayerId = number;
 export type ItemId = "green" | "red" | "blue" | "gold-shimmer";

@@ -1,4 +1,4 @@
-import { Actor, Pid } from "./actor";
+import { Actor, Pid } from "./packages/actor/actor";
 // import { pid as  pid2 } from "./actor";
 
 function ActorMethod() {

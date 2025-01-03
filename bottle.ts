@@ -1,4 +1,4 @@
-import { AnyMessage } from "./actor";
+import { AnyMessage } from "./packages/actor/actor";
 
 
 

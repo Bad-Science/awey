@@ -1,0 +1,11 @@
+{
+  "name": "@last/actor",
+  "version": "0.0.2",
+  "description": "multithreaded actor framework for yavascript",
+  "main": "mod.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "@Bad-Science",
+  "license": "MIT"
+}
