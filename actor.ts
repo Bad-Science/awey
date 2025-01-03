@@ -1,15 +1,23 @@
+/**
+ * @last: Towards ergonomic, parallel actor programming in YavaScript
+ */
+
+
 import { AsyncQueue } from './aq';
-import { isMainThread, threadId } from 'worker_threads';
+import { getEnvironmentData, setEnvironmentData, threadId } from 'worker_threads';
+import { isMainThread } from 'worker_threads';
+import { bottle, Bottle } from './bottlef';
+
 
 /*****************************************************************************/
 /** Messaging Types And Message Utility Types */
 /*****************************************************************************/
 
 // Utility Types
-type JSONPrimitive = string | number | boolean | null;
-type JSONValue = JSONPrimitive | JSONObject | JSONArray;
-type JSONObject = { [key: string]: JSONValue };
-type JSONArray = JSONValue[];
+export type JSONPrimitive = string | number | boolean | null;
+export type JSONValue = JSONPrimitive | JSONObject | JSONArray;
+export type JSONObject = { [key: string]: JSONValue };
+export type JSONArray = JSONValue[];
 
 export type AnyMessage = JSONValue | SharedArrayBuffer;
 export type AnyReturn = JSONValue | void;
@@ -18,13 +26,13 @@ export const DEFAULT_PREFIX = '_';
 export type DEFAULT_PREFIX  = '_';
 
 // Exxtract handler function signature from actor and message key
-type Handler<A,H> = H extends keyof A 
+export type Handler<A,H> = H extends keyof A 
   ? A[H] extends (...args: any[]) => void
     ? A[H]
     : never
   : never;
 
-type MessageKeys<A extends Actor, PREFIX extends string> = {
+export type MessageKeys<A extends Actor, PREFIX extends string> = {
   [K in keyof A]: A[K] extends (...args: any) => any
     ? K extends `${PREFIX}${infer M}`
       ? M
@@ -51,6 +59,8 @@ export type Pid<A> = {
 
 export type RealmId = number;
 
+type GroupKey = string;
+
 // type ActorType<Type extends Actor> = (...args: any[]) => Type
 
 type ActorTypeName = string;
@@ -66,6 +76,52 @@ type TypedActorKey<T extends Actor> = {
   __actorType?: T;
 }
 
+type TypedGroupKey<T extends Actor> = {
+  type: ActorTypeName;
+  groupKey: GroupKey;
+  __actorType?: T;
+}
+
+type ActorIdentifier<A extends Actor> = Pid<A> | TypedActorKey<A> | TypedGroupKey<A>;
+
+
+type ForwardedMessage = {
+  type: 'message';
+  to: Pid<any>;
+  from?: Pid<any>;
+  key: string;
+  message: AnyMessage;
+  mid: string;
+}
+
+type MessageResponse = {
+  type: 'reply';
+  to: Pid<any>;
+  from: Pid<any>;
+  mid: string;
+  reply: AnyReturn;
+}
+
+/**
+ * IRC: Inter-Realm Communication
+ */
+type IRC = {
+  type: 'register';
+  pid: Pid<any>;
+  key: ActorKey;
+} | {
+  type: 'unregister';
+  key: ActorKey;
+} | {
+  type: 'registerGroup';
+  pid: Pid<any>;
+  groupKey: GroupKey;
+} | {
+  type: 'unregisterGroup';
+  pid: Pid<any>;
+  groupKey: GroupKey;
+} | ForwardedMessage | MessageResponse
+
 /**
  * A realm is the heart of the actor system. It tracks ("allocates") all local actors.
  * A realm tracks actors using weak references, so when no other references to an actor exist,
@@ -80,25 +136,76 @@ export class ActorRealm {
   public readonly realmId: RealmId;
   private readonly crypto: Crypto;
   private readonly actors: Map<ActorId, WeakRef<Actor>> = new Map();
+  private readonly localRegistry: Map<ActorKey, Pid<any>> = new Map();
   private readonly registeredActors: Map<ActorId, TypedActor<any>> = new Map();
-  private readonly registry: Pid<Registry>;
+  private readonly registeredGroups: Map<GroupKey, Set<Pid<any>>> = new Map();
+  private readonly ircChannel: StrictBroadcastChannel<IRC>;
+  //TODO: Per-realm irc channels for messaging
   private nextActorId: ActorId = 1;
+  private awaitingReplies: Map<string, { resolve: (value: AnyReturn) => void, reject: (reason?: any) => void }> = new Map();
+  // private readonly mainState: {registry: Pid<Registry>} | null;
 
   private static threadLocalInstance: ActorRealm;
-  static initThreadLocal(registry: Pid<Registry>, id: RealmId = threadId) {
+  static init(id: RealmId = threadId) {
     if (this.threadLocalInstance) {
       throw new Error('ActorRealm.initThreadLocal can only be called once per thread');
     }
-    this.threadLocalInstance = new ActorRealm(id, registry);
+    this.threadLocalInstance = new ActorRealm(id);
   }
 
   static get threadLocal() { return this.threadLocalInstance }
 
-  private constructor(realmId: RealmId, registry: Pid<Registry>) {
-    this.realmId = realmId;
+  private constructor(id: RealmId) {
+    this.realmId = id;
     this.crypto = new Crypto();
-    this.registry = registry;
+
+    this.ircChannel = new StrictBroadcastChannel<IRC>("irc");
+    this.ircChannel.onmessage = (event) => {
+      const update = event.data as IRC;
+      if (update.type === 'register') {
+        this.localRegistry.set(update.key, update.pid);
+      }
+      else if (update.type === 'registerGroup') {
+        let group = this.registeredGroups.get(update.groupKey);
+        if (!group) {
+          group = new Set();
+          this.registeredGroups.set(update.groupKey, group);
+        }
+        group.add(update.pid);
+      }
+      else if (update.type === 'unregister') {
+        this.localRegistry.delete(update.key);
+      }
+      else if (update.type === 'unregisterGroup') {
+        this.registeredGroups.get(update.groupKey)?.delete(update.pid);
+      }
+      else if (update.type === 'message' && update.to.realmId == this.realmId) {
+        this.__receiveForwardedMessage(update);
+      }
+      else if (update.type === 'reply' && update.to.realmId == this.realmId) {
+        this.__receiveForwardedReply(update);
+      }
+    }
   }
+
+  register(type: ActorTypeName, key: ActorKey, actor: Actor) {
+    this.registeredActors.set(actor.self.localId, { type, actor });
+    this.localRegistry.set(key, actor.self);
+    this.ircChannel.postMessage({ type: 'register', pid: actor.self, key });
+  }
+
+  registerGroup(type: ActorTypeName, key: GroupKey, actors: Actor[]) {
+    let group = this.registeredGroups.get(key);
+    if (!group) {
+      group = new Set();
+      this.registeredGroups.set(key, group);
+    }
+    actors.forEach(a => {
+      group.add(a.self);
+      this.ircChannel.postMessage({ type: 'registerGroup', pid: a.self, groupKey: key });
+    });
+  }
+
 
   /**
    * Allocate a pid for an actor and store a weak reference within the realm.
@@ -117,36 +224,76 @@ export class ActorRealm {
    * @param pid - The pid of the actor to lookup.
    * @returns The actor if found, null if it has never existed recently, or undefined if it has been recently garbage collected.
    */
-  __lookup<Self extends Actor>(pid: Pid<Self>): Self | null | undefined {
+  __getLocal<Self extends Actor>(pid: Pid<Self>): Self | null | undefined {
     const maybeActor = this.actors.get(pid.localId);
     if (!maybeActor) return null;
     return maybeActor.deref() as (Self | undefined);
   }
 
-  __findPid<Type extends Actor>(key: ActorKey): Promise<Pid<Type> | null> {
-    // different approach: Should we invert this? have actors not actually be subclasses but have static methods to send type-specific messages?
-    return Actor.send(this.registry, 'find', key);
+  __forwardMessage<Self extends Actor>(to: Pid<Self>, from: Pid<Self> | undefined, key: string, message: AnyMessage, { prefix }: { prefix?: string } = { prefix: DEFAULT_PREFIX as string }): Promise<AnyReturn> {
+    if (to.realmId == this.realmId) {
+      const actor = this.__getLocal(to);
+      if (!actor) throw new Error(`Actor ${to} not found in realm ${this.realmId}`);
+      return actor.__receive(key, message, { prefix }) as any;
+    }
+
+    return new Promise((resolve, reject) => {
+      const mid = this.crypto.randomUUID();
+      // if (from) {
+        this.awaitingReplies.set(mid, { resolve, reject });
+      // }
+      this.ircChannel.postMessage({ type: 'message', to, from, key, message, mid });      
+    })
   }
 
-  async __find<Type extends Actor>(type: ActorTypeName | null, key: ActorKey): Promise<Type | null> {
-    const pid = await this.__findPid<any>(key);
-    if (!pid) return null;
-    const typedActor = this.registeredActors.get(pid.localId);
-    if (!typedActor) throw new Error('Actor is in registry but not in local realm');
-    const shouldTypeCheck = !!type;
-    if (shouldTypeCheck && typedActor.type !== type) throw new Error('Actor type mismatch');
-    return typedActor.actor;
-  }
-
-  async __register<Type extends Actor>(actorType: ActorTypeName, key: ActorKey, actor: Type): Promise<void> {
-    this.registeredActors.set(actor.self.localId, { type: actorType, actor });
-    try {
-      await Actor.send(this.registry, 'register', { pid: actor.self, key });
-    } catch (e) {
-      this.registeredActors.delete(actor.self.localId);
-      throw e;
+  async __receiveForwardedMessage(update: ForwardedMessage): Promise<void> {
+    if (update.to.realmId != this.realmId) return;
+    const maybeActor = this.actors.get(update.to.localId);
+    const actor = maybeActor?.deref();
+    if (!actor) return;
+    const reply = await actor.__receive(update.key, update.message, { prefix: DEFAULT_PREFIX })
+    if (update.from) {
+      this.ircChannel.postMessage({ type: 'reply', to: update.from, from: update.to, mid: update.mid, reply });
     }
   }
+
+  __receiveForwardedReply(update: MessageResponse): void {
+    const { resolve } = this.awaitingReplies.get(update.mid);
+    if (!resolve) {
+      console.error(`No resolver found for message id: ${update.mid}`);
+      return;
+    }
+    resolve(update.reply);
+    this.awaitingReplies.delete(update.mid);
+  }
+
+  lookup<Type extends Actor>(key: ActorKey): Pid<Type> | null {
+    return this.localRegistry.get(key) ?? null;
+  }
+
+  lookupGroup<Type extends Actor>(key: GroupKey): Pid<Type> | null {
+    return this.localRegistry.get(key) ?? null;
+  }
+
+  // async __register<Type extends Actor>(actorType: ActorTypeName, key: ActorKey, actor: Type): Promise<void> {
+  //   this.registeredActors.set(actor.self.localId, { type: actorType, actor });
+  //   try {
+  //     await Actor.send(this.registry, 'register', { pid: actor.self, key });
+  //   } catch (e) {
+  //     this.registeredActors.delete(actor.self.localId);
+  //     throw e;
+  //   }
+  // }
+
+    // async __findNamed<Type extends Actor>(type: ActorTypeName | null, key: ActorKey): Promise<Type | null> {
+  //   const pid = await this.__findNamedPid<any>(key);
+  //   if (!pid) return null;
+  //   const typedActor = this.registeredActors.get(pid.localId);
+  //   if (!typedActor) throw new Error('Actor is in registry but not in local realm');
+  //   const shouldTypeCheck = !!type;
+  //   if (shouldTypeCheck && typedActor.type !== type) throw new Error('Actor type mismatch');
+  //   return typedActor.actor;
+  // }
 
   private createPid<Self extends Actor>(actor: Self): Pid<Self> {
     return {
@@ -205,22 +352,19 @@ function pid<A extends Actor>(actor: A): Pid<A> {
  */
 
 
+function isNamedActor<A extends Actor>(id: ActorIdentifier<A>): id is TypedActorKey<A> {
+  return typeof id === 'object' && 'type' in id && 'key' in id;
+}
 
-export class Actor {
-  declare readonly self: Pid<typeof this>;
-  private readonly mailbox: AsyncQueue;
+function isGroupKey<A extends Actor>(id: ActorIdentifier<A>): id is TypedGroupKey<A> {
+  return typeof id === 'object' && 'type' in id && 'groupKey' in id;
+}
 
-  protected constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
-    this.mailbox = new AsyncQueue();
-    this.self = this.realm.__allocate(this);
-    const l = this.realm.__lookup(this.self);
-    if (!l) {
-      throw new Error('failed to allocate self');
-    }
-    console.debug(`Allocated actor:${this.self.localId} in realm:${this.realm.realmId}`);
-  }
+function isPid<A extends Actor>(id: ActorIdentifier<A>): id is Pid<A> {
+  return typeof id === 'object' && 'localId' in id && 'realmId' in id;
+}
 
-  static send<
+export function send<
     A extends Actor,
     K extends MessageKeys<A, PREFIX>,
     PREFIX extends string = DEFAULT_PREFIX,
@@ -228,26 +372,44 @@ export class Actor {
     P = Parameters<Handler<A, H>>[0],
     R = ReturnType<Handler<A, H>>
   >(
-    id: Pid<A> | TypedActorKey<A>,
+    to: ActorIdentifier<A>, 
     key: K,
     message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
-    { from, prefix }: { from?: A, prefix?: PREFIX } = { }
+    { from, prefix }: { from?: Pid<any>, prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
-    const realm = from?.realm ?? ActorRealm.threadLocal;
-    let actor: Promise<A | null>;
-    if (typeof id === 'object' && 'type' in id && 'key' in id) { // registered actor
-      actor = realm.__find<A>(id.type, id.key);
-    } else {
-      actor = Promise.resolve(realm.__lookup<A>(id));
+    const realm = ActorRealm.threadLocal;
+    let pid: Pid<A>;
+    if (isNamedActor(to)) {
+      pid = realm.lookup((to as TypedActorKey<A>).key);
+    } else if (isGroupKey(to)) {
+      pid = realm.lookupGroup((to as TypedGroupKey<A>).groupKey);
+    } else if (isPid(to)) {
+      pid = to as Pid<A>;
     }
-    return actor.then((actor) => {
-      if (!actor) throw new Error(`Actor ${id} not found in realm ${realm.realmId}`);
-      console.log(`Sending message to actor ${id} in realm ${realm.realmId}:`, { key, message });
-      return actor.receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX })
-    }).catch((e) => {
-      console.error(`Failed to send message to actor ${id} in realm ${realm.realmId}`, { key, message });
-      throw e;
-    }) as any;
+
+    if (!pid) throw new Error(`Actor ${to} not found on realm ${realm.realmId}`);
+
+    if (pid.realmId != realm.realmId) {
+      return realm.__forwardMessage(pid, from, key, message, { prefix }) as any;
+    }
+
+    const actor = realm.__getLocal(pid);
+    if (!actor) throw new Error(`Actor ${pid} not found in realm ${realm.realmId}`);
+    return actor.__receive(key, message, { prefix }) as any;
+  }
+
+export class Actor {
+  declare readonly self: Pid<typeof this>;
+  private readonly mailbox: AsyncQueue;
+
+  constructor(protected readonly realm: ActorRealm = ActorRealm.threadLocal) {
+    this.mailbox = new AsyncQueue();
+    this.self = this.realm.__allocate(this);
+    const l = this.realm.__getLocal(this.self);
+    if (!l) {
+      throw new Error('failed to allocate self');
+    }
+    console.debug(`Allocated actor:${this.self.localId} in realm:${this.realm.realmId}`);
   }
 
   protected send<
@@ -258,14 +420,13 @@ export class Actor {
     P = Parameters<Handler<A, H>>[0],
     R = ReturnType<Handler<A, H>>
   >(
-    pid: Pid<A>,
+    pid: Pid<A> | TypedActorKey<A>,
     key: K,
     message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
     { prefix }: { prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
-    const realm = this.realm
-    console.log(`Sending message to actor ${pid.localId} in realm ${realm.realmId}:`, { key, message });
-    return realm.__lookup(pid).receive(key, message, { prefix: prefix ?? DEFAULT_PREFIX }) as any;
+    console.log(`Sending message to actor ${pid} from ${this.self}`, { key, message });
+    return send(pid, key, message, { from: this.self, prefix });
   }
   
   getSelf<Self extends Actor>(): Pid<Self> {
@@ -281,10 +442,14 @@ export class Actor {
     return 'pong';
   }
 
-  private receive(key: string, message: AnyMessage, { prefix }: { prefix: string }): Promise<AnyReturn> {
+  async __receive(key: string, message: AnyMessage, { prefix }: { prefix: string }): Promise<AnyReturn> {
     const handler = this[`${prefix}${key}`];
     if (typeof handler === 'function') {
-      return this.mailbox.enqueue((m) => handler(m), [message]);
+      //TODO: Exceptions are bad. Convert to a {res, err} pattern
+      return this.mailbox.enqueue((m) => handler(m), [message]).catch(e => {
+        console.error('error handling message', key, 'on', this.self, e);
+        return Promise.reject(e);
+      });
     }
     else {
       console.error('no handler for', key, 'on', this.self);
@@ -346,9 +511,83 @@ export class Registry extends Actor {
 }
 
 /*****************************************************************************/
+/** Actor System */
+/*****************************************************************************/
+
+/**
+ * "If I'm this, then do that" -- raya (and also our threading model)
+ * 
+ * Somehow, it took me forever to come up with this nice way of defining threads.
+ * YavaScript is really dumb when it comes to initializing threads, a thread's initial
+ * behavior must be defined at compile time. To get around this, we define the starting
+ * states of each actor thread in one file, and select the initialization function at runtime.
+ * 
+ * I haven't seen anyone do this, but I think it's a nice way to deal with multithreaded js programs.
+ */
+export type ActorSystemDef = () => (() => Actor[])[];
+type CoordinatorMessage = {
+  type: 'all_ready';
+} | {
+  type: 'worker_ready';
+  index: number;
+}
+export function actorSystem(system: ActorSystemDef, systemFile: string, onInit: (id: RealmId) => void = () => {}) {
+  const realmDefs = system();
+  const coordinator = new StrictBroadcastChannel<CoordinatorMessage>('actor_system_coordinator');
+  
+  if (isMainThread) {
+    const readyMap = new Array<boolean>(realmDefs.length).fill(false);
+    coordinator.onmessage = ({data: {type, index}}) => {
+      if (realmDefs.length < 2) {
+        ActorRealm.init(0);
+        realmDefs[0]();
+        return;
+      }
+      if (type === 'worker_ready') {
+        readyMap[index] = true;
+        if (readyMap.every(Boolean)) {
+          console.log('all workers ready');
+          coordinator.postMessage({ type: 'all_ready' });
+          realmDefs[0]();
+        }
+      }
+    }
+    
+    ActorRealm.init(0);
+    readyMap[0] = true;
+
+    for (let index = 1; index < realmDefs.length; ++index) {
+      setEnvironmentData('ACTOR_SYSTEM_INDEX', index);
+      const worker = new Worker(systemFile);
+      worker.postMessage({ type: 'spawn', index });
+    }
+
+  } else {
+    const index = Number(getEnvironmentData('ACTOR_SYSTEM_INDEX'));
+    ActorRealm.init(index);
+
+    coordinator.onmessage = ({data: {type}}) => {
+      if (type === 'all_ready') {
+        if (!realmDefs[index]) {
+          throw new Error('spawner not defined');
+        } else {
+          realmDefs[index]();
+        }
+      }
+    }
+    coordinator.postMessage({ type: 'worker_ready', index });
+  }
+}
+
+/*****************************************************************************/
 /** Utility Functions */
 /*****************************************************************************/
 
 function ensurePromise<T>(value: T | Promise<T>): Promise<T> {
   return value instanceof Promise ? value : Promise.resolve(value);
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean | null | undefined | symbol | bigint {
+  const type = typeof value;
+  return value === null || type !== 'object' && type !== 'function';
 }

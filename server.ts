@@ -8,7 +8,7 @@ abstract class Channel extends Actor {
 
     protected push(message: string): void {
         console.log('pushing message:', message);
-        Actor.send(this.self as Pid<Channel>, 'connect', message);
+        this.send(this.self as Pid<Channel>, 'connect', message);
     }
 
     __message(message: string): void {

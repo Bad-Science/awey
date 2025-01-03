@@ -12,14 +12,14 @@ export class BufferUniverse extends Actor {
     #buffers: WeakMap<BufferKey, Buffer> = new WeakMap();
     #bufferKeys: BufferKey[] = [];
 
-    constructor() {
+    public constructor() {
         super();
         // Sending a message to self in the constructor guarentees that message will be processed before any other messages are received.
-        Actor.send(this.self as Pid<BufferUniverse>, '_init', null);
+        // Actor.send(this.self as Pid<BufferUniverse>, '_init', null);
     }
 
-    async __init() {
-        await this.realm.__register(BufferUniverse.name, "BufferUnimatrix01", this);
+    __init() {
+        this.realm.register(BufferUniverse.name, "BufferUnimatrix01", this);
     }
 
     _findOrLoad(id: BufferId): Buffer {
@@ -42,7 +42,7 @@ export class BufferUniverse extends Actor {
 
     async _saveAll(): Promise<void> {
         for (const key of this.#bufferKeys) {
-            await Actor.send(this.self as Pid<BufferUniverse>, 'save', key.id);
+            await this.send(this.self as Pid<BufferUniverse>, 'save', key.id);
         }
     }
 

@@ -43,7 +43,7 @@ class MyActor extends Actor {
     }
 
     _Inc (by: number): number {
-      const l = this.realm.__lookup(this.self);
+      const l = this.realm.__getLocal(this.self);
         console.log('dec received:', this.count -= by);
         const pid = this._getPid("hello");
         const x = this.send(this.self as Pid<MyActor>, 'Inc', by);

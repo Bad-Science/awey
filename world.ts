@@ -4,6 +4,8 @@ export type Coord = {x: number, y: number};
 export type PlayerId = number;
 export type ItemId = "green" | "red" | "blue" | "gold-shimmer";
 
+export type SurfaceId = number;
+
 export type Item = {
     id: ItemId,
     name: string,
@@ -20,6 +22,9 @@ export type Player = {
     position: Coord,
     name: string,
     inventory: Set<{item: ItemId, quantity: number}>,
+    nozzleTheta: number, // angle of the nozzle in degrees
+    lookingAt: SurfaceId,
+    headingTheta: number, // angle of the player's orientation in degrees
 };
 
 export type MoveResult = {status: 'blocked' | 'moved', position: Coord};
