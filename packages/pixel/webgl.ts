@@ -4,10 +4,8 @@ import { floorVertexShader, floorFragmentShader, skyVertexShader, skyFragmentSha
 export class WebGLRenderer {
     private gl: WebGLRenderingContext;
     private floorProgram: WebGLProgram;
-    private skyProgram: WebGLProgram;
     private ceilingProgram: WebGLProgram;
     private floorBuffer: WebGLBuffer;
-    private skyBuffer: WebGLBuffer;
     private ceilingBuffer: WebGLBuffer;
     private zoom: number = -5;
     private startTime: number = Date.now();
@@ -23,6 +21,7 @@ export class WebGLRenderer {
     private jumpForce = 0.2;
     private gravity = 0.008;
     private cameraHeight = 2.0;
+    private domeVertexCount: number;
 
     constructor(canvas: HTMLCanvasElement) {
         this.gl = canvas.getContext('webgl')!;
@@ -30,10 +29,9 @@ export class WebGLRenderer {
 
         // Create shader programs
         this.floorProgram = this.createProgram(floorVertexShader, floorFragmentShader);
-        this.skyProgram = this.createProgram(skyVertexShader, skyFragmentShader);
         this.ceilingProgram = this.createProgram(floorVertexShader, ceilingFragmentShader);
 
-        // Create floor vertices
+        // Create vertices and buffers
         const floorVertices = new Float32Array([
             -1000, -0, -1000,
              1000, -0, -1000,
@@ -41,26 +39,12 @@ export class WebGLRenderer {
              1000, -0,  1000
         ]);
 
-        // Create dome vertices
-        const ceilingVertices = new Float32Array([
-            -1000, 6, -1000,
-             1000, 6, -1000,
-            -1000, 6,  1000,
-             1000, 6,  1000
-        ]);
-
-        // Create sky vertices
-        const skyVertices = new Float32Array([
-            -2,  2, -1,   // Top left
-             2,  2, -1,   // Top right
-            -2, -1, -1,   // Bottom left
-             2, -1, -1    // Bottom right
-        ]);
+        const dome = this.createDomeVertices(1000, 200, 32);
 
         // Create buffers
         this.floorBuffer = this.createBuffer(floorVertices);
-        this.skyBuffer = this.createBuffer(skyVertices);
-        this.ceilingBuffer = this.createBuffer(ceilingVertices);
+        this.ceilingBuffer = this.createBuffer(dome.vertices);
+        this.domeVertexCount = dome.count;
 
         // Set up controls
         canvas.addEventListener('wheel', this.handleWheel.bind(this));
@@ -121,18 +105,21 @@ export class WebGLRenderer {
     }
 
     private updatePosition() {
-        // Forward/backward movement
-        let moveZ = 0;
-        if (this.keys.has('w')) { moveZ -= 1; }
-        if (this.keys.has('s')) { moveZ += 1; }
-
-        // Apply rotation to forward/backward movement
-        const dx = moveZ * Math.sin(this.rotation);
-        const dz = moveZ * Math.cos(this.rotation);
-
-        // Apply horizontal movement
-        this.position.x += dx * this.moveSpeed;
-        this.position.z += dz * this.moveSpeed;
+        // Get movement input
+        let moveForward = 0;
+        
+        if (this.keys.has('w')) moveForward = -1;
+        if (this.keys.has('s')) moveForward = 1;
+        
+        // Calculate forward direction vector
+        const forward = {
+            x: -Math.sin(this.rotation),
+            z: -Math.cos(this.rotation)
+        };
+        
+        // Move in the rotated direction
+        this.position.x += forward.x * moveForward * this.moveSpeed;
+        this.position.z += forward.z * moveForward * this.moveSpeed;
 
         // Handle rotation
         if (this.keys.has('a')) this.rotation -= 0.03;
@@ -144,15 +131,19 @@ export class WebGLRenderer {
             this.isGrounded = false;
         }
 
-        // Apply gravity and update vertical position
+        // Apply gravity
         this.velocity.y -= this.gravity;
-        this.position.y += this.velocity.y;
 
-        // Check for ground collision
-        if (this.position.y <= 0) {
+        // Calculate new position
+        const newY = this.position.y + this.velocity.y;
+
+        // Check for ground collision before applying new position
+        if (newY <= 0) {
             this.position.y = 0;
             this.velocity.y = 0;
             this.isGrounded = true;
+        } else {
+            this.position.y = newY;
         }
     }
 
@@ -173,7 +164,7 @@ export class WebGLRenderer {
         const viewMatrix = mat4.create();
         
         mat4.perspective(projectionMatrix, 75 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 1000.0);
-        mat4.translate(viewMatrix, viewMatrix, [0, -this.cameraHeight + this.position.y, this.zoom]);
+        mat4.translate(viewMatrix, viewMatrix, [0, -(this.position.y + this.cameraHeight), this.zoom]);
         mat4.rotate(viewMatrix, viewMatrix, -Math.PI * 0.1, [1, 0, 0]);
         mat4.rotate(viewMatrix, viewMatrix, this.rotation, [0, 1, 0]);
         mat4.translate(viewMatrix, viewMatrix, [-this.position.x, 0, -this.position.z]);
@@ -210,30 +201,72 @@ export class WebGLRenderer {
         const ceilingPositionLocation = gl.getAttribLocation(this.ceilingProgram, 'position');
         gl.vertexAttribPointer(ceilingPositionLocation, 3, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(ceilingPositionLocation);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-        // Draw sky
-        gl.useProgram(this.skyProgram);
-        gl.disable(gl.DEPTH_TEST);
-
-        const skyViewMatrix = mat4.create();
-        mat4.translate(skyViewMatrix, skyViewMatrix, [0, 0, -1]);
-        mat4.rotate(skyViewMatrix, skyViewMatrix, -Math.PI * 0.1, [1, 0, 0]);
-        mat4.rotate(skyViewMatrix, skyViewMatrix, this.rotation, [0, 1, 0]);
-
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.skyProgram, 'projectionMatrix'), false, projectionMatrix);
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.skyProgram, 'modelViewMatrix'), false, skyViewMatrix);
-        gl.uniform1f(gl.getUniformLocation(this.skyProgram, 'time'), (Date.now() - this.startTime) / 1000);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuffer);
-        const skyPositionLocation = gl.getAttribLocation(this.skyProgram, 'position');
-        gl.vertexAttribPointer(skyPositionLocation, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(skyPositionLocation);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.domeVertexCount);
     }
 
     destroy() {
         window.removeEventListener('keydown', this.handleKeyDown.bind(this));
         window.removeEventListener('keyup', this.handleKeyUp.bind(this));
+    }
+
+    private createDomeVertices(radius: number, height: number, segments: number): { vertices: Float32Array, count: number } {
+        const vertices: number[] = [];
+        const horizontalSegments = segments;
+        const verticalSegments = Math.floor(segments / 2);
+
+        // Create dome vertices using spherical coordinates
+        for (let y = 0; y <= verticalSegments; y++) {
+            const phi = (y / verticalSegments) * Math.PI * 0.5; // Only go halfway up sphere
+            const cosPhiRadius = radius * Math.cos(phi);
+            const sinPhiHeight = height * Math.sin(phi);
+
+            for (let x = 0; x <= horizontalSegments; x++) {
+                const theta = (x / horizontalSegments) * Math.PI * 2;
+                const cosTheta = Math.cos(theta);
+                const sinTheta = Math.sin(theta);
+
+                // Calculate vertex position
+                const px = cosPhiRadius * cosTheta;
+                const py = sinPhiHeight;
+                const pz = cosPhiRadius * sinTheta;
+
+                vertices.push(px, py, pz);
+            }
+        }
+
+        // Create indices for triangle strips
+        const indices: number[] = [];
+        for (let y = 0; y < verticalSegments; y++) {
+            for (let x = 0; x <= horizontalSegments; x++) {
+                const current = y * (horizontalSegments + 1) + x;
+                const next = current + horizontalSegments + 1;
+
+                indices.push(current);
+                indices.push(next);
+            }
+            // Add degenerate triangles except for last row
+            if (y < verticalSegments - 1) {
+                const current = (y + 1) * (horizontalSegments + 1) + horizontalSegments;
+                const next = (y + 1) * (horizontalSegments + 1);
+                indices.push(current);
+                indices.push(next);
+            }
+        }
+
+        // Convert indices to vertices for TRIANGLE_STRIP
+        const stripVertices: number[] = [];
+        for (const idx of indices) {
+            stripVertices.push(
+                vertices[idx * 3],
+                vertices[idx * 3 + 1],
+                vertices[idx * 3 + 2]
+            );
+        }
+
+        // Return both the vertices and the count
+        return {
+            vertices: new Float32Array(stripVertices),
+            count: stripVertices.length / 3  // Divide by 3 since each vertex has x,y,z
+        };
     }
 } 
