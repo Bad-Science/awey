@@ -104,42 +104,54 @@ export const ceilingFragmentShader = `
 precision highp float;
 varying vec2 v_worldPosition;
 uniform float gridSize;
+uniform float time;
 
 void main() {
     // Create dome grid pattern
     vec2 coord = v_worldPosition;
     float dist = length(coord);
     
-    // Create radial and circular grid lines
+    // Create multiple layers of grid patterns
     float radialGrid = mod(dist, gridSize) / gridSize;
     float angle = atan(coord.y, coord.x);
-    float circularGrid = mod(angle * 10.0, 1.0);
     
-    // Calculate line intensity
+    // Create multiple circular patterns
+    float circularGrid1 = mod(angle * 32.0, 1.0);  // More segments
+    float circularGrid2 = mod(angle * 16.0 + dist * 0.001, 1.0);  // Secondary pattern
+    float circularGrid3 = mod(dist * 0.02, 1.0);  // Concentric rings
+    
+    // Calculate line intensity with multiple patterns
     float radialLine = smoothstep(0.0, 0.05, radialGrid) * smoothstep(1.0, 0.95, radialGrid);
-    float circularLine = smoothstep(0.0, 0.05, circularGrid) * smoothstep(1.0, 0.95, circularGrid);
-    float line = min(radialLine, circularLine);
+    float circularLine1 = smoothstep(0.0, 0.05, circularGrid1) * smoothstep(1.0, 0.95, circularGrid1);
+    float circularLine2 = smoothstep(0.0, 0.05, circularGrid2) * smoothstep(1.0, 0.95, circularGrid2);
+    float circularLine3 = smoothstep(0.0, 0.05, circularGrid3) * smoothstep(1.0, 0.95, circularGrid3);
+    
+    // Combine all patterns
+    float line = min(min(radialLine, circularLine1), min(circularLine2, circularLine3));
     line = 1.0 - line;
     
-    // Color gradient from center to edge
-    float centerGradient = smoothstep(1000.0, 0.0, dist);
-    vec3 innerColor = vec3(0.8, 0.4, 1.0);  // Purple center
-    vec3 outerColor = vec3(0.2, 0.4, 0.8);  // Blue edge
+    // Create pulsing effect
+    float pulse = sin(dist * 0.01 - time * 2.0) * 0.5 + 0.5;
+    
+    // Color gradient from center to edge with sci-fi colors
+    float centerGradient = smoothstep(5000.0, 0.0, dist);
+    vec3 innerColor = vec3(0.1, 0.6, 1.0);  // Bright blue center
+    vec3 outerColor = vec3(0.2, 0.4, 0.8);  // Darker blue edge
     vec3 gridColor = mix(outerColor, innerColor, centerGradient);
     
     // Add glow effect
     float glow = line * 0.8 + 0.2;
     
     // Distance fade
-    float fade = smoothstep(1000.0, 0.0, dist);
+    float fade = smoothstep(4800.0, 100.0, dist);
     
     // Combine effects
-    vec3 finalColor = gridColor * glow;
+    vec3 finalColor = gridColor * (glow + pulse * 0.2);
     float alpha = line * fade;
     
-    // Add atmospheric effect
-    float atmosphere = pow(1.0 - abs(dot(normalize(coord), vec2(0.0, 1.0))), 2.0);
-    finalColor += vec3(0.2, 0.4, 0.8) * atmosphere * 0.3;
+    // Add energy field effect
+    float energyField = pow(1.0 - abs(dot(normalize(coord), vec2(0.0, 1.0))), 3.0);
+    finalColor += vec3(0.3, 0.6, 1.0) * energyField * pulse;
     
     gl_FragColor = vec4(finalColor, alpha);
 }

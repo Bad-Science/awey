@@ -7,21 +7,24 @@ export class WebGLRenderer {
     private ceilingProgram: WebGLProgram;
     private floorBuffer: WebGLBuffer;
     private ceilingBuffer: WebGLBuffer;
-    private zoom: number = -5;
+    private zoom: number = -0.1;
     private startTime: number = Date.now();
     private segments: number = 32;
     
     // Camera controls
     private position = { x: 0, y: 0, z: 0 };
     private rotation = 0;
-    private moveSpeed = 0.08;
+    private moveSpeed = 0.15;
     private keys = new Set<string>();
     private velocity = { x: 0, y: 0, z: 0 };
     private isGrounded = true;
     private jumpForce = 0.2;
     private gravity = 0.008;
-    private cameraHeight = 2.0;
+    private cameraHeight = 1.7;
     private domeVertexCount: number;
+    private pitch: number = 0;  // Looking up/down
+    private yaw: number = 0;    // Looking left/right
+    private isPointerLocked: boolean = false;
 
     constructor(canvas: HTMLCanvasElement) {
         this.gl = canvas.getContext('webgl')!;
@@ -39,7 +42,7 @@ export class WebGLRenderer {
              1000, -0,  1000
         ]);
 
-        const dome = this.createDomeVertices(1000, 200, 32);
+        const dome = this.createDomeVertices(5000, 2000, 64);
 
         // Create buffers
         this.floorBuffer = this.createBuffer(floorVertices);
@@ -50,6 +53,17 @@ export class WebGLRenderer {
         canvas.addEventListener('wheel', this.handleWheel.bind(this));
         window.addEventListener('keydown', this.handleKeyDown.bind(this));
         window.addEventListener('keyup', this.handleKeyUp.bind(this));
+        
+        // Add mouse controls
+        canvas.addEventListener('click', () => {
+            canvas.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            this.isPointerLocked = document.pointerLockElement === canvas;
+        });
+
+        document.addEventListener('mousemove', this.handleMouseMove.bind(this));
         
         this.animate();
     }
@@ -92,8 +106,8 @@ export class WebGLRenderer {
 
     private handleWheel(event: WheelEvent) {
         event.preventDefault();
-        this.zoom += event.deltaY * -0.01;
-        this.zoom = Math.min(Math.max(this.zoom, -20), -1);
+        this.zoom += event.deltaY * -0.02;
+        this.zoom = Math.min(Math.max(this.zoom, -50), -1);
     }
 
     private handleKeyDown(event: KeyboardEvent) {
@@ -111,19 +125,14 @@ export class WebGLRenderer {
         if (this.keys.has('w')) moveForward = -1;
         if (this.keys.has('s')) moveForward = 1;
         
-        // Calculate forward direction vector
+        // Use yaw for movement direction
         const forward = {
-            x: -Math.sin(this.rotation),
-            z: -Math.cos(this.rotation)
+            x: -Math.sin(this.yaw),
+            z: -Math.cos(this.yaw)
         };
         
-        // Move in the rotated direction
         this.position.x += forward.x * moveForward * this.moveSpeed;
         this.position.z += forward.z * moveForward * this.moveSpeed;
-
-        // Handle rotation
-        if (this.keys.has('a')) this.rotation -= 0.03;
-        if (this.keys.has('d')) this.rotation += 0.03;
 
         // Handle jumping
         if (this.keys.has(' ') && this.isGrounded) {
@@ -163,11 +172,19 @@ export class WebGLRenderer {
         const projectionMatrix = mat4.create();
         const viewMatrix = mat4.create();
         
-        mat4.perspective(projectionMatrix, 75 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 1000.0);
-        mat4.translate(viewMatrix, viewMatrix, [0, -(this.position.y + this.cameraHeight), this.zoom]);
-        mat4.rotate(viewMatrix, viewMatrix, -Math.PI * 0.1, [1, 0, 0]);
-        mat4.rotate(viewMatrix, viewMatrix, this.rotation, [0, 1, 0]);
-        mat4.translate(viewMatrix, viewMatrix, [-this.position.x, 0, -this.position.z]);
+        mat4.perspective(
+            projectionMatrix,
+            90 * Math.PI / 180,
+            gl.canvas.width / gl.canvas.height,
+            0.1,
+            10000.0
+        );
+
+        // Simplified camera transform for first person
+        mat4.translate(viewMatrix, viewMatrix, [0, -this.cameraHeight, 0]);
+        mat4.rotate(viewMatrix, viewMatrix, this.pitch, [1, 0, 0]);
+        mat4.rotate(viewMatrix, viewMatrix, this.yaw, [0, 1, 0]);
+        mat4.translate(viewMatrix, viewMatrix, [-this.position.x, -this.position.y, -this.position.z]);
 
         // Draw floor
         gl.useProgram(this.floorProgram);
@@ -195,7 +212,8 @@ export class WebGLRenderer {
         gl.uniformMatrix4fv(gl.getUniformLocation(this.ceilingProgram, 'projectionMatrix'), false, projectionMatrix);
         gl.uniformMatrix4fv(gl.getUniformLocation(this.ceilingProgram, 'modelViewMatrix'), false, viewMatrix);
         gl.uniform2f(gl.getUniformLocation(this.ceilingProgram, 'playerPosition'), this.position.x, this.position.z);
-        gl.uniform1f(gl.getUniformLocation(this.ceilingProgram, 'gridSize'), 50.0);
+        gl.uniform1f(gl.getUniformLocation(this.ceilingProgram, 'time'), (Date.now() - this.startTime) / 1000);
+        gl.uniform1f(gl.getUniformLocation(this.ceilingProgram, 'gridSize'), 200.0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.ceilingBuffer);
         const ceilingPositionLocation = gl.getAttribLocation(this.ceilingProgram, 'position');
@@ -207,6 +225,7 @@ export class WebGLRenderer {
     destroy() {
         window.removeEventListener('keydown', this.handleKeyDown.bind(this));
         window.removeEventListener('keyup', this.handleKeyUp.bind(this));
+        document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
     }
 
     private createDomeVertices(radius: number, height: number, segments: number): { vertices: Float32Array, count: number } {
@@ -268,5 +287,19 @@ export class WebGLRenderer {
             vertices: new Float32Array(stripVertices),
             count: stripVertices.length / 3  // Divide by 3 since each vertex has x,y,z
         };
+    }
+
+    private handleMouseMove(event: MouseEvent) {
+        if (!this.isPointerLocked) return;
+
+        // Increased mouse sensitivity for snappier feel
+        const mouseSensitivityX = 0.003;
+        const mouseSensitivityY = 0.003;
+
+        this.yaw -= event.movementX * mouseSensitivityX;
+        this.pitch -= event.movementY * mouseSensitivityY;
+
+        // Slightly tighter pitch constraints
+        this.pitch = Math.max(Math.min(this.pitch, Math.PI / 2.2), -Math.PI / 2.2);
     }
 } 
