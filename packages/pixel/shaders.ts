@@ -107,52 +107,50 @@ uniform float gridSize;
 uniform float time;
 
 void main() {
-    // Create dome grid pattern
     vec2 coord = v_worldPosition;
     float dist = length(coord);
-    
-    // Create multiple layers of grid patterns
-    float radialGrid = mod(dist, gridSize) / gridSize;
     float angle = atan(coord.y, coord.x);
     
-    // Create multiple circular patterns
-    float circularGrid1 = mod(angle * 32.0, 1.0);  // More segments
-    float circularGrid2 = mod(angle * 16.0 + dist * 0.001, 1.0);  // Secondary pattern
-    float circularGrid3 = mod(dist * 0.02, 1.0);  // Concentric rings
+    // Create shield segments - only show in certain areas
+    float shieldSegment = step(0.0, sin(angle * 3.0 + time * 0.5));  // Creates 3 large segments
+    float edgeEffect = 1.0 - smoothstep(0.0, 100.0, abs(sin(angle * 3.0 + time * 0.5)) * dist);
     
-    // Calculate line intensity with multiple patterns
-    float radialLine = smoothstep(0.0, 0.05, radialGrid) * smoothstep(1.0, 0.95, radialGrid);
-    float circularLine1 = smoothstep(0.0, 0.05, circularGrid1) * smoothstep(1.0, 0.95, circularGrid1);
-    float circularLine2 = smoothstep(0.0, 0.05, circularGrid2) * smoothstep(1.0, 0.95, circularGrid2);
-    float circularLine3 = smoothstep(0.0, 0.05, circularGrid3) * smoothstep(1.0, 0.95, circularGrid3);
+    // Create threatening patterns
+    float radialGrid = mod(dist, gridSize * 1.5) / (gridSize * 1.5);
+    float circularGrid1 = mod(angle * 12.0 + sin(time) * 0.2, 1.0);  // Slower moving, larger segments
+    float circularGrid2 = mod(dist * 0.03 + time * 0.1, 1.0);  // Large energy rings
     
-    // Combine all patterns
-    float line = min(min(radialLine, circularLine1), min(circularLine2, circularLine3));
-    line = 1.0 - line;
+    // Calculate pattern intensity
+    float radialLine = smoothstep(0.0, 0.1, radialGrid) * smoothstep(1.0, 0.9, radialGrid);
+    float circularLine1 = smoothstep(0.0, 0.1, circularGrid1) * smoothstep(1.0, 0.9, circularGrid1);
+    float circularLine2 = smoothstep(0.0, 0.1, circularGrid2) * smoothstep(1.0, 0.9, circularGrid2);
     
-    // Create pulsing effect
-    float pulse = sin(dist * 0.01 - time * 2.0) * 0.5 + 0.5;
+    // Combine patterns
+    float line = min(min(radialLine, circularLine1), circularLine2);
+    line = (1.0 - line) * shieldSegment;
     
-    // Color gradient from center to edge with sci-fi colors
+    // Threatening color scheme
     float centerGradient = smoothstep(5000.0, 0.0, dist);
-    vec3 innerColor = vec3(0.1, 0.6, 1.0);  // Bright blue center
-    vec3 outerColor = vec3(0.2, 0.4, 0.8);  // Darker blue edge
+    vec3 innerColor = vec3(1.0, 0.2, 0.1);  // Bright red center
+    vec3 outerColor = vec3(0.4, 0.1, 0.1);  // Dark red edge
     vec3 gridColor = mix(outerColor, innerColor, centerGradient);
     
-    // Add glow effect
+    // Dramatic pulsing
+    float pulse = sin(dist * 0.005 - time) * 0.5 + 0.5;
+    float warningPulse = pow(sin(time * 2.0) * 0.5 + 0.5, 2.0);  // Sharp warning pulse
+    
+    // Add glow and combine effects
     float glow = line * 0.8 + 0.2;
+    float fade = smoothstep(4800.0, 100.0, dist) * edgeEffect;
     
-    // Distance fade
-    float fade = smoothstep(4800.0, 100.0, dist);
-    
-    // Combine effects
-    vec3 finalColor = gridColor * (glow + pulse * 0.2);
+    vec3 finalColor = gridColor * (glow + pulse * 0.3);
+    finalColor += vec3(1.0, 0.2, 0.1) * warningPulse * shieldSegment * 0.3;  // Add warning flash
     float alpha = line * fade;
     
-    // Add energy field effect
-    float energyField = pow(1.0 - abs(dot(normalize(coord), vec2(0.0, 1.0))), 3.0);
-    finalColor += vec3(0.3, 0.6, 1.0) * energyField * pulse;
+    // Add energy field effect at shield edges
+    float energyField = pow(1.0 - abs(dot(normalize(coord), vec2(0.0, 1.0))), 4.0);
+    finalColor += vec3(1.0, 0.3, 0.2) * energyField * pulse * shieldSegment;
     
-    gl_FragColor = vec4(finalColor, alpha);
+    gl_FragColor = vec4(finalColor, alpha * smoothstep(0.0, 0.1, line));
 }
 `; 
