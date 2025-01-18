@@ -52,3 +52,68 @@ In a multithreaded model, all global state will have to be unsafe. that is a rea
 
 client<->server mutations should be JSON patches
 maybe the zustand wrapper could provide mutation middleware that updates the client state, sets a loading flag, 
+
+
+## The _Underscore_
+Let's talk about the elephant in the room.
+
+The underscore.
+
+Why use an underscore for method names?
+Why a prefix notation in the first place?
+
+When I was first designing this thing, I played around with many different ways of defining actors.
+I tried a purely functional approach, but I couldn't find an ergonomic, type-safe interface, at
+one point I had something that looked a lot like react, at one point something like zustand, but
+none of these felt quite right, and to fully reap the benefits that could come from a functional approach
+would have required a restrictive approach to state that I don't think people would really like to use.
+
+Eventually, I found myself conceding that actors are, fundamentally, objects, and there's no point in 
+dancing around that fact. _If you disagree, look at a GenServer closely and tell me it isn't an object._
+Unfortunately, the class interface happens to be really ergonomic here as well.
+
+But, I wanted some way to distinguish that message handlers are not to be treated as normal object methods,
+and changing their visibility would have made it impossible to infer the message types without some explicit
+declaration, which was something I wasn't willing to budge on. There's no good reason a library should make
+you define a type one-and-a-half times.
+
+Additonally, I wanted @last to be typesafe without a validator. While @last works very nicely with validators,
+they are not required for end-to-end type safety.
+
+I'm sorry but:
+
+``` typescript
+export const appRouter = t.router({
+  hello: publicProcedure
+    .input(
+      z.object({
+        name: z.string(),
+      }),
+    )
+    .query((opts) => {
+      const name: string = opts.input.name;
+      return {
+        greeting: `Hello ${name}`,
+      };
+    }),
+```
+
+just doesn't do it for me.
+
+``` typescript
+export class App extends Actor {
+    _hello = (name: string) => ({greeting: `Hello ${name}`})
+}
+```
+
+Doesn't that just feel better?
+
+Now look, I know what you're thinking: inheritance! bad! away! I know, I know, but I'm sure you can all
+manage to be responsible adults and avoid creating cursedly nested actor hierarchies. That is, if anyone ever uses this thing. And if they do, I expect to see _some_ gore. I thought a lot about footguns and how many and
+how big are acceptable, and decided to use React as my moral compass' footgun reference. If it's no worse than
+`useEffect`, then it's OK. 
+
+Javascript has two special characters that don't escape the symbol eval, so we make use of them.
+
+
+Serializeable State <=> Mobillity & Resumability

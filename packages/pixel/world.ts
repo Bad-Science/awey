@@ -1,4 +1,4 @@
-import { Chroma } from "../../chroma";
+import { Chroma } from "./chroma";
 import { Actor } from "../actor/actor";
 export type Coord = {x: number, y: number};
 export type PlayerId = number;
@@ -65,4 +65,17 @@ class PlayerDB {
  * 
  * Lightning during storms!!
  * You can risk going out in it to supercharge your chroma, but you might get electrocuted!!!
+ * 
+ * Pigments are dropped by mobs, luma is added by refining chroma in factories
+ * 
+ * different kinds of paint guns cradtable or drops
+ * scary mobs in subway tunnels
+ * transport{ skateboards and grappling hooks}
+ * 
+ * 
+ * Zones are like sporadic safe zones, where mobs are less likely to spawn and players hang out and paint.
+ * Zones can be locked down by a clan, and can be overtaken by covering the zone with chroma.
+ * Train tunnels connect zones, and are very dangerous but have good loot.
+ * 
+ * 
  */

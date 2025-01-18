@@ -378,13 +378,13 @@ export function send<
     { from, prefix }: { from?: Pid<any>, prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
   ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
     const realm = ActorRealm.threadLocal;
-    let pid: Pid<A>;
+    let pid: Pid<A> | null = null;
     if (isNamedActor(to)) {
-      pid = realm.lookup((to as TypedActorKey<A>).key);
+      pid = realm.lookup((to).key);
     } else if (isGroupKey(to)) {
-      pid = realm.lookupGroup((to as TypedGroupKey<A>).groupKey);
+      pid = realm.lookupGroup((to).groupKey);
     } else if (isPid(to)) {
-      pid = to as Pid<A>;
+      pid = to;
     }
 
     if (!pid) throw new Error(`Actor ${to} not found on realm ${realm.realmId}`);

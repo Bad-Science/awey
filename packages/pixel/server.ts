@@ -9,6 +9,7 @@ abstract class Channel extends Actor {
     protected push(message: string): void {
         console.log('pushing message:', message);
         this.send(this.self as Pid<Channel>, 'connect', message);
+        this.send(this.self as Pid<Channel>, '_message', )
     }
 
     __message(message: string): void {
@@ -65,7 +66,6 @@ type MyPubSub = {
 
 // API for creating a new channel has typed params that get passed to the constructor.
 export class PlayerChannel extends Channel {
-    declare self: Pid<PlayerChannel>;
     
     // TODO: Named actor registry, for world and chunk access by name instead of pid.
     constructor(private world: Pid<SharedWorld>, private id: PlayerId, private worldId: string) {
@@ -73,8 +73,8 @@ export class PlayerChannel extends Channel {
         this.subscribe<MyPubSub>(`world$${worldId}`);
         this.publish<WorldPubSub>('world', 'Move', {id: this.id, position: {x: 0, y: 0}});
         // Actor.send(this.self, 'move',  {x: 0, y: 0}, {prefix: '_'});
-        this.send(this.self, 'move',  {x: 0, y: 0});
-        this.send(this.self, 'connect',  {x: 0, y: 0});
+        this.send(this.self as Pid<PlayerChannel>, 'move',  {x: 0, y: 0});
+        this.send(this.self as Pid<PlayerChannel>, 'connect',  {x: 0, y: 0});
     }
 
     // protected onConnect({id}: {id: string}): void {
@@ -93,6 +93,8 @@ export class PlayerChannel extends Channel {
         }
         return result;
     }
+
+    
 
     // _connect(c: Coord): void {
     //     console.log('connect received:', c);
