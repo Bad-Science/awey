@@ -106,6 +106,26 @@ export class App extends Actor {
 }
 ```
 
+``` typescript
+const [email, mutEmail] = useMyLastStore((state) => state.email)
+const [name, mutName] = useMyLastStore((state) => state.name)
+
+const EmailComponent = () => {
+    return <input value={email} onChange={mutEmail.set(email)} />
+}
+
+const EmailFormComponent = () => {
+    return <form onSubmit={() => { mutEmail.push(); mutName.push() }}>
+      <input type="text" value={email} onChange={(value) => mutEmail.setLocal(value)} />
+      <input type="email" value={name} onChange={(value) => mutName.setLocal(value)} />
+      <button type="submit">Submit</button>
+      <button type="button" onClick={mutEmail.clear}>Cancel</button>
+    </form>
+}
+```
+
+// Last stores map directly to an actor's state. getters are automatic, we provide sugar for mutators.
+
 Doesn't that just feel better?
 
 Now look, I know what you're thinking: inheritance! bad! away! I know, I know, but I'm sure you can all
@@ -117,3 +137,138 @@ Javascript has two special characters that don't escape the symbol eval, so we m
 
 
 Serializeable State <=> Mobillity & Resumability
+
+
+Although the actor system is object-oriented, the communication between them draws from functional programming,
+and avoids mutable messages. YavaScript doesn't have an excellent way to support immutable data, so we use what we have.
+All messages must be serializable, and are frozen upon sending. Because we can't enforce this in the compiler, we fail
+fast at runtime when the immutable message contract is violated. This check can be disabled in production if you wish,
+but consider mutating messages undefined behavior. We provide an interface called `Bottle` and some associated functions
+to efficiently manipulate immutable data. The one acceptable exception to this rule is SharedArrayBuffers, which are
+can be used to share memory across actors, even if they are on a different thread. But if you use them in this way, you 
+must pay some mind to concurrency control.
+
+
+Last Socket Actor subscribes to a pubsub topic, and forwards that subscription to its Client Actor.
+Last Socket Actor has some state change or receives a message from its local pubsub.
+Last Socket Actor forwards the subscribed message to its client actor.
+
+Client Actors can request to subscribe to a pubsub topic, and the Last Socket Actor will authorize the request,
+and subscribe to the topic if the client has access to that resource.
+
+
+b0: active
+b1-5: xor error correction
+b6-b_t1: timestamp
+b_t1-len: data
+
+
+## The Web Server
+Our web server is a thin layer on top of uWebSockets.js, the C++ webserver used by Bun. It is very fast, and
+gives finer control over connections where needed. The web server's multithreading strategy is built on last's
+multithreaded actor system. Every Last app has a root webserver actor, and at least one web worker actor.
+Typically, you would have one web worker per core available.
+
+For example, a simple web server with two web workers, a task runner actor, and an actor that manages some shared,
+syncrhonized state.
+
+``` typescript
+import { webRoot, webWorker } from "@last/web";
+
+const myApp = () => {
+    return [
+      () => webRoot(appConfig),
+      webWorker,
+      webWorker,
+    ]
+}
+```
+
+For example, 
+
+
+Now let's look at a more interesting example.
+
+``` typescript
+import { MyTaskRunner } from "../tasks/my-task-runner";
+import { MySharedState } from "../state/my-shared-state";
+
+const appDef = {
+  webRoot: () => new WebRoot(),
+  webWorker: () => new WebWorker(),
+  taskRunner: () => new MyTaskRunner(),
+  sharedState: () => new MySharedState(),
+}
+
+const appConfig = {
+  ssl: {
+    key: fs.readFileSync('./ssl/key.pem'),
+    cert: fs.readFileSync('./ssl/cert.pem'),
+  },
+  port: 3000,
+}
+
+const myApp = () => {
+  return [
+    () => root(appConfig),
+    Array.from({length: 2}, () => appDef.webWorker),
+    appDef.taskRunner,
+    appDef.sharedState,
+  ]
+}
+```
+
+
+In Last, we have this concept of a "server-owned state". This is some state that lives on the server,
+in memory, in a database, wherever, that is shared with a client.
+
+Each SOS implements a `patch` method, which takes a JSON object and applies it to the state.
+If the SOS is a POJO, you would just merge or recursively merge the patch object into the state.
+For a database object however, think of `patch` like a changeset, or strong parameters.
+We can use the `patch` method to validate and/or authorize the operation, commit the change to the db,
+and notify any listeners.
+
+
+When I first started using node.js, I was a young programmer, and web development was very different from
+what it is today. Think Flash, IE7, jQuery, polyfills, CoffeeScript. I remember deploying my first socket.io
+app on Heroku, wrapping my head around asynchronous programming while trying to avoid callback hell.
+
+And I instantly fell in love. Yup. I think old JavaScript was great, it was a moment in time, and one that
+I am grateful I was able to participate in.
+
+YavaScript was an even stranger language then than it is now. If you didn't use JavaScript before ES6,
+you would probably be horrified at the way we wrote it back then. Maybe you've seen some older libraries
+that make liberal use of `object.prototype`, `bind`, `apply` etc. Back in the day, OOP in YavaScript was 
+kind of like Jazz. There were no classes, you had to build up the semantics of your object system around the
+needs of your application. You want fully funtional inheritance? Write it your self, kid!
+
+This might sound completely nuts to newer YavaScript devs, but in hindsight lack of features in the language
+encouraged me to be more creative with my code, and dive deeper into what was possible.
+
+There's a lot of reasons to use YavaScript on the server, and a lot of reasons not to, but there was one
+argument for node that I never agreed with: using only one language. I figured, you should always use the
+right tool for the job, not just the one that's closest to your hand. However, one thing eventually changed
+my mind on this: end-to-end type safety. Having free end-to-end type safety is a huge DevEx win, and
+reduces the burden of managing state across network boundaries. In my opinion, this really tips the scales
+towards TypeScript being the right tool for the job for many projects.
+
+When writing software for the web, or writing any even somewhat distributed application, one of the greatest
+challenges, or at least annoyances is managing state across network boundaries. Not just technically, but ergonomically as well.
+
+Many of us have fallen into the premature microservices trap, and ended up with countless network boundaries
+that, while well-defined, add complexity and development overhead to work across these boundaries that could
+(and often should) simply be code boundaries. The best way to factor an application is often to work within
+the tools your language gives you for doing so to the greatest extent practical.
+
+So, we have these two goals that are at the heart of the @last actor system:
+- Zero-overhead end-to-end type safety, across any javascript environments
+- A single, transparent protocol for sharing information between entities within and around any process and network boundaries
+- To work with, rather than against, the features afforded by the language that we are all stuck with for the foreseeable future
+
+In the words of Ryan Dahl, "
+
+
+
+
+// zod validation decorators
+// ephemeral pubsub AND unified log pubsub

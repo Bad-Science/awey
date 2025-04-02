@@ -7,6 +7,7 @@ import { AsyncQueue } from './aq';
 import { getEnvironmentData, setEnvironmentData, threadId } from 'worker_threads';
 import { isMainThread } from 'worker_threads';
 import { bottle, Bottle } from './bottlef';
+import { IdentitySet } from './util';
 
 
 /*****************************************************************************/
@@ -132,13 +133,81 @@ type IRC = {
  * REMINDER: an individual Realm is NOT thread safe.
  */
 
+type ActorGroup = {
+  type: 'group';
+  key: GroupKey;
+  actors: Set<Pid<any>>;
+  lastAccess: number;
+}
+
+type PidKey = `${Pid<any>['realmId']}:${Pid<any>['localId']}`;
+
+class GroupMap {
+  private map = new Map<GroupKey, ActorGroup>();
+
+  put(key: GroupKey, pid: Pid<any>): void {
+    this.loadGroup(key).actors.add(pid);
+  }
+
+  get(key: GroupKey, scheme: SGroupScheme): Pid<any> | null {
+    return scheme(this.loadGroup(key));
+  }
+
+  getm(key: GroupKey, scheme: GroupScheme): Pid<any>[] {
+    const result = scheme(this.loadGroup(key));
+    if (!result) return [];
+    if (Array.isArray(result)) return result;
+    return [result];
+  }
+
+  delete(key: GroupKey, pid: Pid<any>): void {
+    this.loadGroup(key).actors.delete(pid);
+  }
+
+  private loadGroup(key: GroupKey): ActorGroup {
+    let group = this.map.get(key);
+    if (!group) {
+      group = { type: 'group', key, actors: new Set<Pid<any>>(), lastAccess: null };
+      this.map.set(key, group);
+    }
+    return group;
+  }
+
+  private keyFor(pid: Pid<any>): string {
+    return `${pid.realmId}:${pid.localId}`;
+  }
+}
+
+/*****************************************************************************/
+/** Group Access Schemes */
+/*****************************************************************************/
+
+export type SGroupScheme = (group: ActorGroup) => Pid<any>;
+export type MGroupScheme = (group: ActorGroup) => Pid<any>[];
+export type GroupScheme = SGroupScheme | MGroupScheme;
+
+export const RandomScheme: SGroupScheme = (group) => {
+  const index = Math.floor(Math.random() * group.actors.size);
+  return Array.from(group.actors)[index];
+}
+
+export const RoundRobinScheme: SGroupScheme = (group) => {
+  const index = ++group.lastAccess % group.actors.size;
+  group.lastAccess = index;
+  return Array.from(group.actors)[index];
+}
+
+export const BroadcastScheme: MGroupScheme = (group) => {
+  return Array.from(group.actors);
+}
+
 export class ActorRealm {
   public readonly realmId: RealmId;
   private readonly crypto: Crypto;
   private readonly actors: Map<ActorId, WeakRef<Actor>> = new Map();
   private readonly localRegistry: Map<ActorKey, Pid<any>> = new Map();
   private readonly registeredActors: Map<ActorId, TypedActor<any>> = new Map();
-  private readonly registeredGroups: Map<GroupKey, Set<Pid<any>>> = new Map();
+  private readonly registeredGroups: GroupMap = new GroupMap();
   private readonly ircChannel: StrictBroadcastChannel<IRC>;
   //TODO: Per-realm irc channels for messaging
   private nextActorId: ActorId = 1;
@@ -166,18 +235,13 @@ export class ActorRealm {
         this.localRegistry.set(update.key, update.pid);
       }
       else if (update.type === 'registerGroup') {
-        let group = this.registeredGroups.get(update.groupKey);
-        if (!group) {
-          group = new Set();
-          this.registeredGroups.set(update.groupKey, group);
-        }
-        group.add(update.pid);
+        this.registeredGroups.put(update.groupKey, update.pid);
       }
       else if (update.type === 'unregister') {
         this.localRegistry.delete(update.key);
       }
       else if (update.type === 'unregisterGroup') {
-        this.registeredGroups.get(update.groupKey)?.delete(update.pid);
+        this.registeredGroups.delete(update.groupKey, update.pid);
       }
       else if (update.type === 'message' && update.to.realmId == this.realmId) {
         this.__receiveForwardedMessage(update);
@@ -194,17 +258,17 @@ export class ActorRealm {
     this.ircChannel.postMessage({ type: 'register', pid: actor.self, key });
   }
 
-  registerGroup(type: ActorTypeName, key: GroupKey, actors: Actor[]) {
-    let group = this.registeredGroups.get(key);
-    if (!group) {
-      group = new Set();
-      this.registeredGroups.set(key, group);
-    }
-    actors.forEach(a => {
-      group.add(a.self);
-      this.ircChannel.postMessage({ type: 'registerGroup', pid: a.self, groupKey: key });
-    });
-  }
+  // registerGroup(type: ActorTypeName, key: GroupKey, actors: Actor[]) {
+  //   let group = this.registeredGroups.get(key);
+  //   if (!group) {
+  //     group = new Set();
+  //     this.registeredGroups.set(key, group);
+  //   }
+  //   actors.forEach(a => {
+  //     group.add(a.self);
+  //     this.ircChannel.postMessage({ type: 'registerGroup', pid: a.self, groupKey: key });
+  //   });
+  // }
 
 
   /**
@@ -271,8 +335,8 @@ export class ActorRealm {
     return this.localRegistry.get(key) ?? null;
   }
 
-  lookupGroup<Type extends Actor>(key: GroupKey): Pid<Type> | null {
-    return this.localRegistry.get(key) ?? null;
+  lookupGroups<Type extends Actor>(key: GroupKey, scheme: GroupScheme): Pid<Type>[] {
+    return this.registeredGroups.getm(key, scheme);
   }
 
   // async __register<Type extends Actor>(actorType: ActorTypeName, key: ActorKey, actor: Type): Promise<void> {
@@ -365,38 +429,58 @@ function isPid<A extends Actor>(id: ActorIdentifier<A>): id is Pid<A> {
 }
 
 export function send<
-    A extends Actor,
-    K extends MessageKeys<A, PREFIX>,
-    PREFIX extends string = DEFAULT_PREFIX,
-    H = `${PREFIX}${K}`,
-    P = Parameters<Handler<A, H>>[0],
-    R = ReturnType<Handler<A, H>>
-  >(
-    to: ActorIdentifier<A>, 
-    key: K,
-    message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
-    { from, prefix }: { from?: Pid<any>, prefix?: PREFIX } = { prefix: DEFAULT_PREFIX as PREFIX }
-  ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
-    const realm = ActorRealm.threadLocal;
-    let pid: Pid<A> | null = null;
-    if (isNamedActor(to)) {
-      pid = realm.lookup((to).key);
-    } else if (isGroupKey(to)) {
-      pid = realm.lookupGroup((to).groupKey);
-    } else if (isPid(to)) {
-      pid = to;
-    }
-
-    if (!pid) throw new Error(`Actor ${to} not found on realm ${realm.realmId}`);
-
-    if (pid.realmId != realm.realmId) {
-      return realm.__forwardMessage(pid, from, key, message, { prefix }) as any;
-    }
-
-    const actor = realm.__getLocal(pid);
-    if (!actor) throw new Error(`Actor ${pid} not found in realm ${realm.realmId}`);
-    return actor.__receive(key, message, { prefix }) as any;
+  A extends Actor,
+  K extends MessageKeys<A, PREFIX>,
+  PREFIX extends string = DEFAULT_PREFIX,
+  H = `${PREFIX}${K}`,
+  P = Parameters<Handler<A, H>>[0],
+  R = ReturnType<Handler<A, H>>
+>(
+  to: ActorIdentifier<A>, 
+  key: K,
+  message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
+  { from, prefix, scheme }: { from?: Pid<any>, prefix?: PREFIX, scheme?: GroupScheme } = { prefix: DEFAULT_PREFIX as PREFIX, scheme: RandomScheme }
+): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
+  const realm = ActorRealm.threadLocal;
+  let pid: Pid<A> | null = null;
+  if (isNamedActor(to)) {
+    pid = realm.lookup((to).key);
+  } else if (isGroupKey(to)) {
+    pid = realm.lookupGroups<any>((to).groupKey, scheme)[0];
+  } else if (isPid(to)) {
+    pid = to;
   }
+
+  if (!pid) throw new Error(`Actor ${to} not found on realm ${realm.realmId}`);
+
+  if (pid.realmId != realm.realmId) {
+    return realm.__forwardMessage(pid, from, key, message, { prefix }) as any;
+  }
+
+  const actor = realm.__getLocal(pid);
+  if (!actor) throw new Error(`Actor ${pid} not found in realm ${realm.realmId}`);
+  return actor.__receive(key, message, { prefix }) as any;
+}
+
+// export function sendm<
+//   A extends Actor,
+//   K extends MessageKeys<A, PREFIX>,
+//   PREFIX extends string = DEFAULT_PREFIX,
+//   H = `${PREFIX}${K}`,
+//   P = Parameters<Handler<A, H>>[0],
+//   R = ReturnType<Handler<A, H>>
+// >(
+//   to: ActorIdentifier<A>[],
+//   key: K,
+//   message: P extends AnyMessage ? Parameters<Handler<A, H>>[0] : never,
+//   { from, prefix, scheme }: { from?: Pid<any>, prefix?: PREFIX, scheme?: GroupScheme } = { prefix: DEFAULT_PREFIX as PREFIX, scheme: BroadcastScheme }
+// ): R extends Promise<AnyReturn> ? R : Promise<R extends AnyReturn ? ReturnType<Handler<A, H>> : never> {
+//   const pids: Pid<A>[] = [];
+  
+//   return Promise.all(pids.map(pid => send(pid, key, message, { from, prefix })));
+// }
+
+
 
 export class Actor {
   declare readonly self: Pid<typeof this>;

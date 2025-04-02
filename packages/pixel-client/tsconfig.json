@@ -19,6 +19,6 @@
             "@/*": ["./src/*"]
         }
     },
-    "include": ["./**/*.ts", "./**/*.tsx", "../pixel-client/client.tsx", "../pixel-client/main.tsx", "../pixel-client/player.ts", "../pixel-client/shaders.ts", "../pixel-client/vite.config.ts", "../pixel-client/webgl.ts"],
+    "include": ["./**/*.ts", "./**/*.tsx", "./*.ts", "../pixel-client/client.tsx", "../pixel-client/main.tsx", "../pixel-client/player.ts", "../pixel-client/shaders.ts", "../pixel-client/vite.config.ts", "../pixel-client/webgl.ts"],
     "exclude": ["node_modules"]
 }
