@@ -17,8 +17,6 @@ actorSystem(() => ([
 });
 
 
-
-
 import { MyTaskRunner } from "../tasks/my-task-runner";
 import { MySharedState } from "../state/my-shared-state";
 import { WebRoot } from "../web";
@@ -39,11 +37,11 @@ const appConfig = {
   port: 3000,
 }
 
-const myApp = () => {
-  return [
-    () => appDef.webRoot(appConfig),
-    Array.from({length: 2}, () => appDef.webWorker),
-    appDef.taskRunner,
-    appDef.sharedState,
-  ]
-}
+const myApp = () => [
+  () => appDef.webRoot(appConfig),
+  Array.from({length: 2}, () => appDef.webWorker),
+  appDef.taskRunner,
+  appDef.sharedState,
+];
+
+threads(myApp);
