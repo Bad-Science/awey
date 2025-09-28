@@ -24,9 +24,17 @@ const waitAndLog = async (id: WorkerId) => {
 const myApp3 = threads(() => [
   (id: WorkerId) => console.log('hello from main!', id, isMainThread),
   {name: 'foo', func: (id: WorkerId) => console.log('hello From Worker!', id, systemThreadId, isMainThread), scale: 5},
+  () => {
+    throw new Error('test error');
+  },
   async (id: WorkerId) => {
     console.log(`#------HELLO FROM WORKER ${id}`)
     await waitAndLog(id)
+    // Exit this worker after logging
+    if (!isMainThread) {
+      console.log(`Worker ${id} is terminating...`);
+      process.exit(42); // Exit with custom code
+    }
   }
-], _filename, { startBehavior: 'all' });
+], _filename, { startBehavior: 'all', onWorkerError: 'Restart' });
 

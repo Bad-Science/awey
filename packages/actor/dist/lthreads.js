@@ -24,19 +24,30 @@ module.exports = __toCommonJS(lthreads_exports);
 var import_worker_threads = require("worker_threads");
 var import_pubsub = require("./pubsub");
 var import_worker_threads2 = require("worker_threads");
-function threadsInit(initMain, initWorker) {
-  if (import_worker_threads.isMainThread)
-    initMain();
-  else
-    initWorker();
+function isMain() {
+  return import_worker_threads.isMainThread;
 }
-function ifMainDo(cb) {
-  if (import_worker_threads.isMainThread)
-    return cb();
+const WORKER_INIT_ARGV_KEY = "_lthreads_worker_init_argv_";
+function setWorkerInitArgv(argv) {
+  console.log("setting worker init argv", argv);
+  (0, import_worker_threads.setEnvironmentData)(WORKER_INIT_ARGV_KEY, argv);
 }
-function unlessMainDo(cb) {
-  if (!import_worker_threads.isMainThread)
-    return cb();
+function getWorkerInitArgv() {
+  const argv = (0, import_worker_threads.getEnvironmentData)(WORKER_INIT_ARGV_KEY);
+  console.log("getting worker init argv", argv);
+  return argv;
+}
+function spawn(systemFile, name, workerId) {
+  if (!isMain()) {
+    throw new TypeError("threads can only be spawned from main (for now)");
+  }
+  setWorkerInitArgv({ name, workerId });
+  const worker = new import_worker_threads2.Worker(systemFile, {
+    execArgv: process.execArgv,
+    env: process.env,
+    workerData: { name, workerId }
+  });
+  return worker;
 }
 function isMainDef(defId) {
   return defId === "0" || defId === 0 || defId === "main";
@@ -50,23 +61,10 @@ function normalizeDef(defId, tDef) {
     throw new TypeError(`Invalid thread definition: ${typeof tDef}`);
   }
 }
-function findDef(defId, defs) {
-  return defs.find((def) => def.name == defId);
-}
 function validateMainDef(mainDef) {
   if (mainDef.scale != 1) {
     throw new TypeError("Main Def must have scale of 1");
   }
-}
-const WORKER_INIT_ARGV_KEY = "_lthreads_worker_init_argv_";
-function setWorkerInitArgv(argv) {
-  console.log("setting worker init argv", argv);
-  (0, import_worker_threads.setEnvironmentData)(WORKER_INIT_ARGV_KEY, argv);
-}
-function getWorkerInitArgv() {
-  const argv = (0, import_worker_threads.getEnvironmentData)(WORKER_INIT_ARGV_KEY);
-  console.log("getting worker init argv", argv);
-  return argv;
 }
 function extractDefs(tDefs) {
   let mainDef = null;
@@ -85,19 +83,6 @@ function extractDefs(tDefs) {
   }
   return [mainDef, workerDefs];
 }
-function spawn(systemFile, name, workerId) {
-  ifMainDo(() => {
-    setWorkerInitArgv({ name, workerId });
-    const worker = new import_worker_threads2.Worker(systemFile, {
-      execArgv: process.execArgv,
-      env: process.env,
-      workerData: { name, workerId }
-    });
-  });
-  unlessMainDo(() => {
-    throw new TypeError("threads can only be spawned from main (for now)");
-  });
-}
 function getWorkerId(name, index) {
   return `${name}:${index}`;
 }
@@ -105,7 +90,10 @@ function getWorkerId(name, index) {
 const defaultThreadOpts = {
   startBehavior: "all",
   init: (id) => console.log("initializing", id),
-  pubsub: new import_pubsub.ProcessPubSub("_lthreads_global_")
+  pubsub: new import_pubsub.ProcessPubSub("_lthreads_global_"),
+  onWorkerExit: (workerId, code) => console.log(`Worker ${workerId} exited with code ${code}`),
+  onWorkerError: "Restart",
+  maxRetries: 3
 };
 function threads(systemDef, systemFile, opts = defaultThreadOpts) {
   opts = { ...defaultThreadOpts, ...opts };
@@ -122,9 +110,42 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
     }
   };
   const areAllWorkersReady = () => {
-    return !Array.from(workerStatuses.values()).some((status) => status != "Ready");
+    return !Array.from(workerStatuses.values()).some((status) => status === "NotReady");
   };
-  ifMainDo(() => {
+  const handleThread = (thread, threadId, name, retries = 0) => {
+    thread.on("exit", (code) => {
+      console.log(`Worker ${threadId} exited with code ${code}`);
+      workerStatuses.set(threadId, "Terminated");
+      globalChannel.pub("WorkerExit", { workerId: threadId, code });
+      opts.onWorkerExit?.(threadId, code);
+    });
+    thread.on("error", (error) => {
+      console.error(`Worker ${threadId} error:`, error);
+      workerStatuses.set(threadId, "Terminated");
+      globalChannel.pub("WorkerError", { workerId: threadId, error });
+      if (opts.onWorkerError == "Restart") {
+        if (retries >= opts.maxRetries) {
+          console.log(`Worker ${threadId} error: ${error}, max retries reached`);
+        } else {
+          console.log(`Worker ${threadId} error: ${error}, restarting`);
+          const newThread = spawn(systemFile, name, threadId);
+          if (newThread) {
+            handleThread(newThread, threadId, name, retries + 1);
+          }
+        }
+      } else if (opts.onWorkerError == "Ignore") {
+        workerStatuses.set(threadId, "Terminated");
+        globalChannel.pub("WorkerExit", { workerId: threadId, code: 0 });
+        console.log(`Worker ${threadId} error: ${error}, ignoring`);
+      } else if (opts.onWorkerError == "Fatal") {
+        workerStatuses.set(threadId, "Terminated");
+        globalChannel.pub("WorkerExit", { workerId: threadId, code: 1 });
+        console.log(`Worker ${threadId} error: ${error}, fatal`);
+        throw error;
+      }
+    });
+  };
+  if (isMain()) {
     _name = "main";
     _workerId = getWorkerId(_name, 0);
     const workerThreads = workerDefs.flatMap(({ name, func, scale }) => {
@@ -132,10 +153,13 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
         const threadId = getWorkerId(name, index);
         const thread = spawn(systemFile, name, threadId);
         workerStatuses.set(threadId, "NotReady");
-        return thread;
+        if (thread) {
+          handleThread(thread, threadId, name);
+        }
+        return { threadId, thread };
       });
     });
-    console.log("worker threads", workerThreads, areAllWorkersReady());
+    console.log("worker threads", workerThreads.map((w) => w.threadId), areAllWorkersReady());
     globalChannel.sub("WorkerReady", ({ workerId }) => {
       console.log("worker ready", workerId);
       workerStatuses.set(workerId, "Ready");
@@ -147,7 +171,8 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
     if (workerThreads.length == 0) {
       console.log("no worker threads, calling main def");
       callDef(mainDef, _workerId);
-    } else if (opts.startBehavior == "each") {
+    }
+    if (opts.startBehavior == "each") {
       console.log("each worker thread, calling main def");
       callDef(mainDef, _workerId);
     } else if (opts.startBehavior == "all") {
@@ -158,8 +183,7 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
     } else {
       throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
     }
-  });
-  unlessMainDo(() => {
+  } else {
     const { name, workerId } = getWorkerInitArgv();
     _name = name;
     _workerId = workerId;
@@ -179,7 +203,7 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
     } else {
       throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
     }
-  });
+  }
   return {
     __globalChannel: globalChannel,
     __workerStatuses: workerStatuses,

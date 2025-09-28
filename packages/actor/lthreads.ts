@@ -72,18 +72,52 @@ import { Worker } from "worker_threads";
 // }
 
 
-function threadsInit (initMain: () => void, initWorker: () => void) {
-  if (isMainThread) initMain();
-  else initWorker();
+// function ifMainDo<ReturnValue> (cb: () => ReturnValue) {
+//   if (isMainThread) return cb();
+// }
+
+// function unlessMainDo<ReturnValue> (cb: () => ReturnValue) {
+//   if (!isMainThread) return cb();
+// }
+
+
+/*****************************************************************************/
+/** System-Level Threading */
+/*****************************************************************************/
+
+function isMain() {
+  return isMainThread;
 }
 
-function ifMainDo<ReturnValue> (cb: () => ReturnValue) {
-  if (isMainThread) return cb();
+const WORKER_INIT_ARGV_KEY = '_lthreads_worker_init_argv_'
+type WorkerInitArgv = { name: string, workerId: WorkerId };
+function setWorkerInitArgv(argv: WorkerInitArgv) {
+  console.log('setting worker init argv', argv);
+  setEnvironmentData(WORKER_INIT_ARGV_KEY, argv);
+}
+function getWorkerInitArgv() {
+  const argv = getEnvironmentData(WORKER_INIT_ARGV_KEY) as WorkerInitArgv;
+  console.log('getting worker init argv', argv);
+  return argv;
 }
 
-function unlessMainDo<ReturnValue> (cb: () => ReturnValue) {
-  if (!isMainThread) return cb();
+export function spawn(systemFile: string, name: string, workerId: WorkerId): Worker {
+  if (!isMain()) {
+    throw new TypeError('threads can only be spawned from main (for now)');
+  }
+
+  setWorkerInitArgv({ name, workerId });
+  const worker = new Worker(systemFile, {
+    execArgv: process.execArgv,
+    env: process.env,
+    workerData: { name, workerId }
+  });
+  return worker;
 }
+
+/*****************************************************************************/
+/** Thread Definition Utilities */
+/*****************************************************************************/
 
 function isMainDef (defId: string | number) {
   return defId === '0' || defId === 0 || defId === 'main';
@@ -99,26 +133,10 @@ function normalizeDef (defId: string, tDef: TDef): TDefComplex {
   }
 }
 
-function findDef (defId: string, defs: TDefComplex[]): TDefComplex {
-  return defs.find((def) => def.name == defId);
-}
-
 function validateMainDef (mainDef: TDefComplex) {
   if (mainDef.scale != 1) {
     throw new TypeError('Main Def must have scale of 1');
   }
-}
-
-const WORKER_INIT_ARGV_KEY = '_lthreads_worker_init_argv_'
-type WorkerInitArgv = { name: string, workerId: WorkerId };
-function setWorkerInitArgv(argv: WorkerInitArgv) {
-  console.log('setting worker init argv', argv);
-  setEnvironmentData(WORKER_INIT_ARGV_KEY, argv);
-}
-function getWorkerInitArgv() {
-  const argv = getEnvironmentData(WORKER_INIT_ARGV_KEY) as WorkerInitArgv;
-  console.log('getting worker init argv', argv);
-  return argv;
 }
 
 function extractDefs (tDefs: ListedThreads | NamedThreads): [TDefFunc, TDefComplex[]] {
@@ -142,42 +160,13 @@ function extractDefs (tDefs: ListedThreads | NamedThreads): [TDefFunc, TDefCompl
   return [mainDef, workerDefs];
 }
 
-export function spawn(systemFile: string, name: string, workerId: WorkerId) {
-  ifMainDo(() => {
-    setWorkerInitArgv({ name, workerId });
-    const worker = new Worker(systemFile, {
-      execArgv: process.execArgv,
-      env: process.env,
-      workerData: { name, workerId }
-    });
-  });
-
-  unlessMainDo(() => {
-    // TODO: use global channel to signal main thread to spawn
-    throw new TypeError('threads can only be spawned from main (for now)');
-  })
-}
-
 function getWorkerId(name: string, index: string | number): WorkerId {
   return `${name}:${index}`;
 }
 
-
-export type GlobalChannelEvents = {
-  AllReady: {},
-  WorkerReady: { workerId: WorkerId }
-}
-export interface ThreadOpts {
-  startBehavior: 'all' | 'each';
-  init?: (id: string) => void | Promise<void>;
-  pubsub?: PubSub<GlobalChannelEvents>;
-};
-
-const defaultThreadOpts: ThreadOpts = {
-  startBehavior: 'all',
-  init: (id) => console.log("initializing", id),
-  pubsub: new ProcessPubSub<GlobalChannelEvents>('_lthreads_global_')
-};
+/*****************************************************************************/
+/** Thread System */
+/*****************************************************************************/
 
 export type WorkerId = `${string}:${string}`;
 export type TDefId = '0' | 'main' | string;
@@ -186,15 +175,49 @@ type TDefComplex = {func: TDefFunc, scale: number, name: string}
 export type TDef = TDefFunc | TDefComplex;
 type ListedThreads = TDef[]
 type NamedThreads = {[key: string]: TDef}
+export type ThreadsDef = () => ListedThreads | NamedThreads;
+
+
+export type GlobalChannelEvents = {
+  AllReady: {},
+  WorkerReady: { workerId: WorkerId },
+  WorkerExit: { workerId: WorkerId, code: number },
+  WorkerError: { workerId: WorkerId, error: any }
+}
+
+/*****************************************************************************/
+/** Thread System Configuration */
+/*****************************************************************************/
+
+type WorkerErrorBehavior = 'Restart' | 'Ignore' | 'Fatal';
+export interface ThreadOpts {
+  startBehavior: 'all' | 'each';
+  init?: (id: string) => void | Promise<void>;
+  pubsub?: PubSub<GlobalChannelEvents>;
+  onWorkerExit?: (workerId: WorkerId, code: number) => void;
+  onWorkerError?: WorkerErrorBehavior;
+  maxRetries?: number;
+};
+
+const defaultThreadOpts: ThreadOpts = {
+  startBehavior: 'all',
+  init: (id) => console.log("initializing", id),
+  pubsub: new ProcessPubSub<GlobalChannelEvents>('_lthreads_global_'),
+  onWorkerExit: (workerId, code) => console.log(`Worker ${workerId} exited with code ${code}`),
+  onWorkerError: 'Restart',
+  maxRetries: 3
+};
+
+/*****************************************************************************/
+/** Thread System Implementation */
+/*****************************************************************************/
+
 // export type ThreadsDefArray<TDefReturn> = () => (TDef<TDefReturn>)[];
 // export type ThreadsDefMap<TDefReturn> = () => {[key: string]: TDef<TDefReturn>}
-export type ThreadsDef = () => ListedThreads | NamedThreads;
-// no need for constructors to be parameterized, no good way to define init params anyway.
-// do we even need TDefReturn????
 
 export interface ThreadSystem {
   __globalChannel: PubSub<GlobalChannelEvents>;
-  __workerStatuses: Map<WorkerId, 'Ready' | 'NotReady'>;
+  __workerStatuses: Map<WorkerId, 'Ready' | 'NotReady' | 'Terminated'>;
   workerName: string;
   workerId: WorkerId;
   isMain: boolean;
@@ -208,63 +231,107 @@ export function threads (
   opts = { ...defaultThreadOpts, ...opts };
   const globalChannel: PubSub<GlobalChannelEvents> = opts.pubsub;
   const [mainDef, workerDefs] = extractDefs(systemDef())
-  const workerStatuses = new Map<WorkerId, 'Ready' | 'NotReady'>();
-  let _name: string;
-  let _workerId: WorkerId;
-  let defCalled = false;
+  const workerStatuses = new Map<WorkerId, 'Ready' | 'NotReady' | 'Terminated'>();
+
+  let $name: string;
+  let $workerId: WorkerId;
+  let $defCalled = false;
+
   const callDef = async (def: TDefFunc, id: WorkerId) => {
-    if (!defCalled) {
-      defCalled = true;
+    if (!$defCalled) {
+      $defCalled = true;
       await def(id);
     }
   }
 
   const areAllWorkersReady = () => {
-    return !Array.from(workerStatuses.values()).some((status) => status != 'Ready');
+    return !Array.from(workerStatuses.values()).some((status) => status === 'NotReady');
   }
 
-  ifMainDo(() => {
-    _name = 'main';
-    _workerId = getWorkerId(_name, 0);
+  const attachHandlers = (thread: Worker, threadId: WorkerId, name: string, retries: number = 0) => {
+    thread.on('exit', (code) => {
+      console.log(`Worker ${threadId} exited with code ${code}`);
+      workerStatuses.set(threadId, 'Terminated');
+      globalChannel.pub('WorkerExit', { workerId: threadId, code });
+      opts.onWorkerExit?.(threadId, code);
+    });
+    
+    thread.on('error', (error) => {
+      console.error(`Worker ${threadId} error:`, error);
+      workerStatuses.set(threadId, 'Terminated');
+      globalChannel.pub('WorkerError', { workerId: threadId, error });
+      if (opts.onWorkerError == 'Restart') {
+        if (retries >= opts.maxRetries) {
+          console.log(`Worker ${threadId} error: ${error}, max retries reached`);
+        } else {
+          console.log(`Worker ${threadId} error: ${error}, restarting`);
+          const newThread = spawn(systemFile, name, threadId);
+          if (newThread) {
+            attachHandlers(newThread, threadId, name, retries + 1);
+          }
+        }
+      } else if (opts.onWorkerError == 'Ignore') {
+        workerStatuses.set(threadId, 'Terminated');
+        globalChannel.pub('WorkerExit', { workerId: threadId, code: 0 });
+        console.log(`Worker ${threadId} error: ${error}, ignoring`);
+        // do nothing
+      } else if (opts.onWorkerError == 'Fatal') {
+        workerStatuses.set(threadId, 'Terminated');
+        globalChannel.pub('WorkerExit', { workerId: threadId, code: 1 });
+        console.log(`Worker ${threadId} error: ${error}, fatal`);
+        throw error;
+      }
+    });
+  }
+
+  if (isMain()) {
+    $name = 'main';
+    $workerId = getWorkerId($name, 0);
     const workerThreads = workerDefs.flatMap(({name, func, scale}) => {
       return Array.from(Array(scale).keys()).map((index) => {
         const threadId = getWorkerId(name, index);
         const thread = spawn(systemFile, name, threadId);
         workerStatuses.set(threadId, 'NotReady');
-        return thread;
+        
+        // Add event listeners for worker lifecycle
+        if (thread) {
+          attachHandlers(thread, threadId, name);
+        }
+        
+        return { threadId, thread };
       });
     });
-    console.log('worker threads', workerThreads, areAllWorkersReady());
+    console.log('worker threads', workerThreads.map(w => w.threadId), areAllWorkersReady());
 
     globalChannel.sub('WorkerReady', ({ workerId }) => {
       console.log('worker ready', workerId);
       workerStatuses.set(workerId, 'Ready');
       if (areAllWorkersReady()) {
-        callDef(mainDef, _workerId);
+        callDef(mainDef, $workerId);
         globalChannel.pub('AllReady', {});
       }
     })
 
     if (workerThreads.length == 0) {
       console.log('no worker threads, calling main def');
-      callDef(mainDef, _workerId);
-    } else if (opts.startBehavior == 'each') {
+      callDef(mainDef, $workerId);
+    }
+
+    if (opts.startBehavior == 'each') {
       console.log('each worker thread, calling main def');
-      callDef(mainDef, _workerId);
+      callDef(mainDef, $workerId);
     } else if (opts.startBehavior == 'all') {
       console.log('all worker threads, deferring main def');
       globalChannel.sub('AllReady', () => {
-        callDef(mainDef, _workerId);
+        callDef(mainDef, $workerId);
       })
     } else {
       throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
     }
-  });
-
-  unlessMainDo(() => {
+  } else {
     const { name, workerId } = getWorkerInitArgv();
-    _name = name;
-    _workerId = workerId;
+    $name = name;
+    $workerId = workerId;
     const thisDef = workerDefs.find((def) => def.name == name);
     if (!thisDef) {
       throw new Error(`Thread definition not found: ${name}`);
@@ -285,13 +352,13 @@ export function threads (
     } else {
       throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
     }
-  });
+  }
 
   return {
     __globalChannel: globalChannel,
     __workerStatuses: workerStatuses,
-    workerName: _name,
-    workerId: _workerId,
+    workerName: $name,
+    workerId: $workerId,
     isMain: isMainThread
   }
 }
