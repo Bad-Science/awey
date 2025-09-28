@@ -115,10 +115,10 @@ function threads(systemDef, systemFile, opts = defaultThreadOpts) {
   let _name;
   let _workerId;
   let defCalled = false;
-  const callDef = (def, id) => {
+  const callDef = async (def, id) => {
     if (!defCalled) {
       defCalled = true;
-      def(id);
+      await def(id);
     }
   };
   const areAllWorkersReady = () => {

@@ -89,7 +89,7 @@ function isMainDef (defId: string | number) {
   return defId === '0' || defId === 0 || defId === 'main';
 }
 
-function normalizeDef (defId: string, tDef: TDef<unknown>): TDefComplex<unknown> {
+function normalizeDef (defId: string, tDef: TDef): TDefComplex {
   if (typeof tDef === 'function') {
     return { name: defId, func: tDef, scale: 1 };
   } else if (typeof tDef === 'object') {
@@ -99,11 +99,11 @@ function normalizeDef (defId: string, tDef: TDef<unknown>): TDefComplex<unknown>
   }
 }
 
-function findDef<T> (defId: string, defs: TDefComplex<T>[]): TDefComplex<T> {
+function findDef (defId: string, defs: TDefComplex[]): TDefComplex {
   return defs.find((def) => def.name == defId);
 }
 
-function validateMainDef (mainDef: TDefComplex<unknown>) {
+function validateMainDef (mainDef: TDefComplex) {
   if (mainDef.scale != 1) {
     throw new TypeError('Main Def must have scale of 1');
   }
@@ -121,9 +121,9 @@ function getWorkerInitArgv() {
   return argv;
 }
 
-function extractDefs (tDefs: ListedThreads<unknown> | NamedThreads<unknown>): [TDefFunc<unknown>, TDefComplex<unknown>[]] {
-  let mainDef: TDefFunc<unknown> = null;
-  const workerDefs: TDefComplex<unknown>[] = Object.entries(tDefs).reduce((acc, [defId, def]) => {
+function extractDefs (tDefs: ListedThreads | NamedThreads): [TDefFunc, TDefComplex[]] {
+  let mainDef: TDefFunc = null;
+  const workerDefs: TDefComplex[] = Object.entries(tDefs).reduce((acc, [defId, def]) => {
     const normalized = normalizeDef(defId, def);
 
     if (isMainDef(defId)) {
@@ -133,7 +133,7 @@ function extractDefs (tDefs: ListedThreads<unknown> | NamedThreads<unknown>): [T
     } else {
       return [...acc, normalizeDef(defId, def)];
     }
-  }, [] as TDefComplex<unknown>[]);
+  }, [] as TDefComplex[]);
 
   if (!mainDef === null) {
     mainDef = () => null;
@@ -181,14 +181,14 @@ const defaultThreadOpts: ThreadOpts = {
 
 export type WorkerId = `${string}:${string}`;
 export type TDefId = '0' | 'main' | string;
-type TDefFunc<TDefReturn> = (id: WorkerId) => TDefReturn;
-type TDefComplex<TDefReturn> = {func: TDefFunc<TDefReturn>, scale: number, name: string}
-export type TDef<TDefReturn> = TDefFunc<TDefReturn> | TDefComplex<TDefReturn>;
-type ListedThreads<TDefReturn> = TDef<TDefReturn>[]
-type NamedThreads<TDefReturn> = {[key: string]: TDef<TDefReturn>}
+type TDefFunc = (id: WorkerId) => void | Promise<void>;
+type TDefComplex = {func: TDefFunc, scale: number, name: string}
+export type TDef = TDefFunc | TDefComplex;
+type ListedThreads = TDef[]
+type NamedThreads = {[key: string]: TDef}
 // export type ThreadsDefArray<TDefReturn> = () => (TDef<TDefReturn>)[];
 // export type ThreadsDefMap<TDefReturn> = () => {[key: string]: TDef<TDefReturn>}
-export type ThreadsDef<TDefReturn> = () => ListedThreads<TDefReturn> | NamedThreads<TDefReturn>;
+export type ThreadsDef = () => ListedThreads | NamedThreads;
 // no need for constructors to be parameterized, no good way to define init params anyway.
 // do we even need TDefReturn????
 
@@ -200,8 +200,8 @@ export interface ThreadSystem {
   isMain: boolean;
 }
 
-export function threads<TDefReturn = void> (
-  systemDef: ThreadsDef<TDefReturn>,
+export function threads (
+  systemDef: ThreadsDef,
   systemFile: string,
   opts: ThreadOpts = defaultThreadOpts
 ): ThreadSystem {
@@ -212,10 +212,10 @@ export function threads<TDefReturn = void> (
   let _name: string;
   let _workerId: WorkerId;
   let defCalled = false;
-  const callDef = (def: TDefFunc<unknown>, id: WorkerId) => {
+  const callDef = async (def: TDefFunc, id: WorkerId) => {
     if (!defCalled) {
       defCalled = true;
-      def(id);
+      await def(id);
     }
   }
 

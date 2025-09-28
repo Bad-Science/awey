@@ -16,8 +16,17 @@ console.log(_filename, systemThreadId, isMainThread);
 //   myWorker, myWorker
 // ]), _filename, { startBehavior: 'all' });
 
+const waitAndLog = async (id: WorkerId) => {
+  await new Promise(res => setTimeout(res, 5000))
+  console.log(`------HELLO FROM WORKER ${id}`)
+}
+
 const myApp3 = threads(() => [
   (id: WorkerId) => console.log('hello from main!', id, isMainThread),
-  {name: 'foo', func: (id: WorkerId) => console.log('hello From Worker!', id, systemThreadId, isMainThread), scale: 5}
-], _filename, { startBehavior: 'each' });
+  {name: 'foo', func: (id: WorkerId) => console.log('hello From Worker!', id, systemThreadId, isMainThread), scale: 5},
+  async (id: WorkerId) => {
+    console.log(`#------HELLO FROM WORKER ${id}`)
+    await waitAndLog(id)
+  }
+], _filename, { startBehavior: 'all' });
 
