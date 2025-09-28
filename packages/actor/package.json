@@ -2,10 +2,19 @@
   "name": "@last/actor",
   "version": "0.0.2",
   "description": "multithreaded actor framework for yavascript",
-  "main": "mod.ts",
+  "main": "dist/mod.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "esbuild $(find . -name '*.ts' -not -path './node_modules/*') --platform=node --format=cjs --outdir=dist --sourcemap",
+    "test": "npm run build && node dist/test/lthreads_test.js",
+    "dev": "npm run build && concurrently \"npm run build -- --watch\" \"nodemon --watch dist --delay 0.5 dist/test/lthreads_test.js\"",
+    "clean": "rm -rf dist"
   },
   "author": "@Bad-Science",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.19.0",
+    "concurrently": "^8.2.0",
+    "nodemon": "^3.0.0"
+  }
 }

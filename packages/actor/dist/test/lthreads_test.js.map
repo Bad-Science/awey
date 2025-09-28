@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../test/lthreads_test.ts"],
+  "sourcesContent": ["import { threadId as systemThreadId, isMainThread } from \"worker_threads\";\nimport { threads, ThreadsDef, WorkerId } from \"../lthreads\";\n\nconst _filename = __filename;\nconsole.log(_filename, systemThreadId, isMainThread);\n\n// const myApp = threads(() => ({\n//   main: () => console.log('hello from main', systemThreadId, isMainThread),\n//   // worker: () => console.log('hello from worker', systemThreadId, isMainThread)\n// }), _filename, { startBehavior: 'all' })\n\n\n// const myWorker = () => console.log('hello from worker!', systemThreadId, isMainThread);\n// const myApp2 = threads(() => ([\n//   () => console.log('hello from main!', systemThreadId, isMainThread),\n//   myWorker, myWorker\n// ]), _filename, { startBehavior: 'all' });\n\nconst myApp3 = threads(() => [\n  (id: WorkerId) => console.log('hello from main!', id, isMainThread),\n  {name: 'foo', func: (id: WorkerId) => console.log('hello From Worker!', id, systemThreadId, isMainThread), scale: 5}\n], _filename, { startBehavior: 'each' });\n\n"],
+  "mappings": "AAAA,4BAAyD;AACzD,sBAA8C;AAE9C,MAAM,YAAY;AAClB,QAAQ,IAAI,WAAW,sBAAAA,UAAgB,kCAAY;AAcnD,MAAM,aAAS,yBAAQ,MAAM;AAAA,EAC3B,CAAC,OAAiB,QAAQ,IAAI,oBAAoB,IAAI,kCAAY;AAAA,EAClE,EAAC,MAAM,OAAO,MAAM,CAAC,OAAiB,QAAQ,IAAI,sBAAsB,IAAI,sBAAAA,UAAgB,kCAAY,GAAG,OAAO,EAAC;AACrH,GAAG,WAAW,EAAE,eAAe,OAAO,CAAC;",
+  "names": ["systemThreadId"]
+}

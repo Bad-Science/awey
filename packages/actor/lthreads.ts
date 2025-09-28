@@ -2,7 +2,9 @@
 /** Actor System */
 /*****************************************************************************/
 
-import { getEnvironmentData, isMainThread, setEnvironmentData, threadId } from "worker_threads";
+import { getEnvironmentData, isMainThread, setEnvironmentData, threadId as systemThreadId } from "worker_threads";
+import { PubSub, ProcessPubSub } from "./pubsub";
+import { Worker } from "worker_threads";
 
 /**
  * "If I'm this, then do that" -- raya (and also our threading model)
@@ -14,151 +16,60 @@ import { getEnvironmentData, isMainThread, setEnvironmentData, threadId } from "
  * 
  * I haven't seen anyone do this, but I think it's a nice way to deal with multithreaded js programs.
  */
-export type ActorSystemDef = () => (() => Actor[])[];
-type CoordinatorMessage = {
-  type: 'all_ready';
-} | {
-  type: 'worker_ready';
-  index: number;
-}
-export function actorSystem(system: ActorSystemDef, systemFile: string, onInit: (id: RealmId) => void = () => {}) {
-  const realmDefs = system();
-  const coordinator = new StrictBroadcastChannel<CoordinatorMessage>('actor_system_coordinator');
+// export type ActorSystemDef = () => (() => Actor[])[];
+// type CoordinatorMessage = {
+//   type: 'all_ready';
+// } | {
+//   type: 'worker_ready';
+//   index: number;
+// }
+// export function actorSystem(system: ActorSystemDef, systemFile: string, onInit: (id: RealmId) => void = () => {}) {
+//   const realmDefs = system();
+//   const coordinator = new StrictBroadcastChannel<CoordinatorMessage>('actor_system_coordinator');
   
-  if (isMainThread) {
-    const readyMap = new Array<boolean>(realmDefs.length).fill(false);
-    coordinator.onmessage = ({data: {type, index}}) => {
-      if (realmDefs.length < 2) {
-        ActorRealm.init(0);
-        realmDefs[0]();
-        return;
-      }
-      if (type === 'worker_ready') {
-        readyMap[index] = true;
-        if (readyMap.every(Boolean)) {
-          console.log('all workers ready');
-          coordinator.postMessage({ type: 'all_ready' });
-          realmDefs[0]();
-        }
-      }
-    }
+//   if (isMainThread) {
+//     const readyMap = new Array<boolean>(realmDefs.length).fill(false);
+//     coordinator.onmessage = ({data: {type, index}}) => {
+//       if (realmDefs.length < 2) {
+//         ActorRealm.init(0);
+//         realmDefs[0]();
+//         return;
+//       }
+//       if (type === 'worker_ready') {
+//         readyMap[index] = true;
+//         if (readyMap.every(Boolean)) {
+//           console.log('all workers ready');
+//           coordinator.postMessage({ type: 'all_ready' });
+//           realmDefs[0]();
+//         }
+//       }
+//     }
     
-    ActorRealm.init(0);
-    readyMap[0] = true;
+//     ActorRealm.init(0);
+//     readyMap[0] = true;
 
-    for (let index = 1; index < realmDefs.length; ++index) {
-      setEnvironmentData('ACTOR_SYSTEM_INDEX', index);
-      const worker = new Worker(systemFile);
-      worker.postMessage({ type: 'spawn', index });
-    }
+//     for (let index = 1; index < realmDefs.length; ++index) {
+//       setEnvironmentData('ACTOR_SYSTEM_INDEX', index);
+//       const worker = new Worker(systemFile);
+//       worker.postMessage({ type: 'spawn', index });
+//     }
 
-  } else {
-    const index = Number(getEnvironmentData('ACTOR_SYSTEM_INDEX'));
-    ActorRealm.init(index);
+//   } else {
+//     const index = Number(getEnvironmentData('ACTOR_SYSTEM_INDEX'));
+//     ActorRealm.init(index);
 
-    coordinator.onmessage = ({data: {type}}) => {
-      if (type === 'all_ready') {
-        if (!realmDefs[index]) {
-          throw new Error('spawner not defined');
-        } else {
-          realmDefs[index]();
-        }
-      }
-    }
-    coordinator.postMessage({ type: 'worker_ready', index });
-  }
-}
-
-class NamedStrictChannel<T> {
-    private readonly channel: BroadcastChannel;
-    // private readonly handlers: ((message: T) => void)[] = [];
-    constructor(name: string) {
-      this.channel = new BroadcastChannel(name);
-    }
-
-    public pub(message: T) {
-      this.channel.postMessage(message);
-    }
-
-    public sub(handler: (message: T) => void) {
-      this.channel.addEventListener('message', (event) => handler(event.data));
-    }
-}
-
-type StringKeysOnly<T> = {
-  [K in string]: T;
-};
-type PubSubEvents = StringKeysOnly<{
-  [event: string]: unknown;
-}>
-// type PubSubDef = { [event: string]: unknown };
-
-
-type PSEvent<T> = keyof T & string
-type Pub<T> = <E extends PSEvent<T>>(event: E, message: T[E]) => void;
-type Sub<T> = <E extends PSEvent<T>>(event: E, cb: (message: T[E]) => void) => Symbol;
-type Unsub = (token: Symbol) => boolean;
-
-interface PubSub<T extends PubSubEvents> {
-  pub: Pub<T>
-  sub: Sub<T>
-  unsub: Unsub;
-}
-
-abstract class PubSubBase<T extends PubSubEvents> implements PubSub<T> {
-  protected readonly subMap: Map<PSEvent<T>, Map<Symbol, (message: unknown) => void>> = new Map();
-  // protected readonly topic: string;
-  // protected constructor (topic: string) { }
-
-  abstract pub: Pub<T>;
-
-  sub: Sub<T> = (event, cb) => {
-    const handle = Symbol(event);
-    const entry = [handle, cb] satisfies [Symbol, (m: unknown) => void];
-    if (this.subMap.has(event)) {
-      this.subMap.get(event).set(...entry);
-    }
-    this.subMap.set(event, new Map([entry]));
-    return handle;
-  }
-
-  unsub: Unsub = (handle) => {
-    for (let [_event, handlers] of this.subMap.entries()) {
-      if (handlers.delete(handle)) return true;
-    }
-    return false;
-  }
-
-  protected propagate = (event: PSEvent<T>, message: T[typeof event]) => {
-    const handlers = this.subMap.get(event);
-    for (let [_, cb] of handlers) {
-      cb(message);
-    }
-    return handlers.size;
-  }
-}
-
-class ProcessPubSub<T extends PubSubEvents> extends PubSubBase<T> {
-  private readonly channel: BroadcastChannel;
-
-  constructor (topic: string) {
-    super();
-    this.channel = new BroadcastChannel(topic);
-    this.channel.addEventListener('message', (rawEvent) => {
-      const { event, message } = rawEvent.data;
-      this.propagate(event, message);
-    });
-  }
-
-  pub: Pub<T> = (event, message) => {
-    this.channel.postMessage({ event, message });
-  }
-
-  close = () => {
-    this.channel.close();
-    // this.subMap.clear();
-  }
-};
+//     coordinator.onmessage = ({data: {type}}) => {
+//       if (type === 'all_ready') {
+//         if (!realmDefs[index]) {
+//           throw new Error('spawner not defined');
+//         } else {
+//           realmDefs[index]();
+//         }
+//       }
+//     }
+//     coordinator.postMessage({ type: 'worker_ready', index });
+//   }
+// }
 
 
 function threadsInit (initMain: () => void, initWorker: () => void) {
@@ -166,12 +77,12 @@ function threadsInit (initMain: () => void, initWorker: () => void) {
   else initWorker();
 }
 
-function runIfMain<ReturnValue> (cb: () => ReturnValue) {
-  if (isMainThread) cb();
+function ifMainDo<ReturnValue> (cb: () => ReturnValue) {
+  if (isMainThread) return cb();
 }
 
-function runIfWorker<ReturnValue> (cb: () => ReturnValue) {
-  if (!isMainThread) cb();
+function unlessMainDo<ReturnValue> (cb: () => ReturnValue) {
+  if (!isMainThread) return cb();
 }
 
 function isMainDef (defId: string | number) {
@@ -199,12 +110,15 @@ function validateMainDef (mainDef: TDefComplex<unknown>) {
 }
 
 const WORKER_INIT_ARGV_KEY = '_lthreads_worker_init_argv_'
-type WorkerInitArgv = { name: string };
+type WorkerInitArgv = { name: string, workerId: WorkerId };
 function setWorkerInitArgv(argv: WorkerInitArgv) {
+  console.log('setting worker init argv', argv);
   setEnvironmentData(WORKER_INIT_ARGV_KEY, argv);
 }
 function getWorkerInitArgv() {
-  return getEnvironmentData(WORKER_INIT_ARGV_KEY);
+  const argv = getEnvironmentData(WORKER_INIT_ARGV_KEY) as WorkerInitArgv;
+  console.log('getting worker init argv', argv);
+  return argv;
 }
 
 function extractDefs (tDefs: ListedThreads<unknown> | NamedThreads<unknown>): [TDefFunc<unknown>, TDefComplex<unknown>[]] {
@@ -228,32 +142,47 @@ function extractDefs (tDefs: ListedThreads<unknown> | NamedThreads<unknown>): [T
   return [mainDef, workerDefs];
 }
 
-export function spawn(tDef: TDef<unknown>) {
-  runIfMain(() => {
-    if (typeof tDef === 'function') {
-      
-    } else {
-      
-    }
+export function spawn(systemFile: string, name: string, workerId: WorkerId) {
+  ifMainDo(() => {
+    setWorkerInitArgv({ name, workerId });
+    const worker = new Worker(systemFile, {
+      execArgv: process.execArgv,
+      env: process.env,
+      workerData: { name, workerId }
+    });
   });
 
-  runIfWorker(() => {
+  unlessMainDo(() => {
     // TODO: use global channel to signal main thread to spawn
     throw new TypeError('threads can only be spawned from main (for now)');
   })
 }
 
+function getWorkerId(name: string, index: string | number): WorkerId {
+  return `${name}:${index}`;
+}
+
+
+export type GlobalChannelEvents = {
+  AllReady: {},
+  WorkerReady: { workerId: WorkerId }
+}
 export interface ThreadOpts {
-  startBehavior: 'all' | 'each'
+  startBehavior: 'all' | 'each';
+  init?: (id: string) => void | Promise<void>;
+  pubsub?: PubSub<GlobalChannelEvents>;
 };
 
-const defaultThreadOpts: ThreadOpts= {
-  startBehavior: 'all'
+const defaultThreadOpts: ThreadOpts = {
+  startBehavior: 'all',
+  init: (id) => console.log("initializing", id),
+  pubsub: new ProcessPubSub<GlobalChannelEvents>('_lthreads_global_')
 };
 
+export type WorkerId = `${string}:${string}`;
 export type TDefId = '0' | 'main' | string;
-type TDefFunc<TDefReturn> = () => TDefReturn;
-type TDefComplex<TDefReturn> = {func: () => TDefReturn, scale: number, name: string}
+type TDefFunc<TDefReturn> = (id: WorkerId) => TDefReturn;
+type TDefComplex<TDefReturn> = {func: TDefFunc<TDefReturn>, scale: number, name: string}
 export type TDef<TDefReturn> = TDefFunc<TDefReturn> | TDefComplex<TDefReturn>;
 type ListedThreads<TDefReturn> = TDef<TDefReturn>[]
 type NamedThreads<TDefReturn> = {[key: string]: TDef<TDefReturn>}
@@ -263,54 +192,110 @@ export type ThreadsDef<TDefReturn> = () => ListedThreads<TDefReturn> | NamedThre
 // no need for constructors to be parameterized, no good way to define init params anyway.
 // do we even need TDefReturn????
 
-export function threads<TDefReturn = void> (systemDef: ThreadsDef<TDefReturn>, systemFile: string, opts: ThreadOpts = defaultThreadOpts) {
-  const globalChannel = new NamedStrictChannel<CoordinatorMessage>('_lthreads_global_');
-  const [mainDef, workerDefs] = extractDefs(systemDef())
-
-  runIfMain(() => {
-    const threads = workerDefs.flatMap(({name, func, scale}) => {
-      
-    })
-
-    if (opts.startBehavior == 'all') {
-      globalChannel.sub((message) => {
-        if (message.type == 'worker_ready')
-      })
-    }
-    if mainDef();
-  });
-
-  runIfWorker(() => {
-    const initArg = getWorkerInitArgv();
-    if (opts.startBehavior == 'all') {
-      globalChannel.sub((message) => {
-        if (message.type == 'all_ready') {
-          const thisDef = workerDefs.find((def) => def.name == initArg);
-        }
-      })
-    } else {
-
-    }
-  });
+export interface ThreadSystem {
+  __globalChannel: PubSub<GlobalChannelEvents>;
+  __workerStatuses: Map<WorkerId, 'Ready' | 'NotReady'>;
+  workerName: string;
+  workerId: WorkerId;
+  isMain: boolean;
 }
 
-export function multi(n: number, def: TDef)
+export function threads<TDefReturn = void> (
+  systemDef: ThreadsDef<TDefReturn>,
+  systemFile: string,
+  opts: ThreadOpts = defaultThreadOpts
+): ThreadSystem {
+  opts = { ...defaultThreadOpts, ...opts };
+  const globalChannel: PubSub<GlobalChannelEvents> = opts.pubsub;
+  const [mainDef, workerDefs] = extractDefs(systemDef())
+  const workerStatuses = new Map<WorkerId, 'Ready' | 'NotReady'>();
+  let _name: string;
+  let _workerId: WorkerId;
+  let defCalled = false;
+  const callDef = (def: TDefFunc<unknown>, id: WorkerId) => {
+    if (!defCalled) {
+      defCalled = true;
+      def(id);
+    }
+  }
 
+  const areAllWorkersReady = () => {
+    return !Array.from(workerStatuses.values()).some((status) => status != 'Ready');
+  }
 
-const myApp = threads(() => ({
-  main: () => console.log('hello from main', threadId, isMainThread),
-  webWorker: () => console.log('hello from worker', threadId, isMainThread)
-}), __filename, { startBehavior: 'all' })
+  ifMainDo(() => {
+    _name = 'main';
+    _workerId = getWorkerId(_name, 0);
+    const workerThreads = workerDefs.flatMap(({name, func, scale}) => {
+      return Array.from(Array(scale).keys()).map((index) => {
+        const threadId = getWorkerId(name, index);
+        const thread = spawn(systemFile, name, threadId);
+        workerStatuses.set(threadId, 'NotReady');
+        return thread;
+      });
+    });
+    console.log('worker threads', workerThreads, areAllWorkersReady());
 
+    globalChannel.sub('WorkerReady', ({ workerId }) => {
+      console.log('worker ready', workerId);
+      workerStatuses.set(workerId, 'Ready');
+      if (areAllWorkersReady()) {
+        callDef(mainDef, _workerId);
+        globalChannel.pub('AllReady', {});
+      }
+    })
 
-const myWorker = () => console.log('hello from worker!', threadId, isMainThread);
-const myApp2 = threads(() => ([
-  () => console.log('hello from main!', threadId, isMainThread),
-  myWorker, myWorker
-]), __filename);
+    if (workerThreads.length == 0) {
+      console.log('no worker threads, calling main def');
+      callDef(mainDef, _workerId);
+    } else if (opts.startBehavior == 'each') {
+      console.log('each worker thread, calling main def');
+      callDef(mainDef, _workerId);
+    } else if (opts.startBehavior == 'all') {
+      console.log('all worker threads, deferring main def');
+      globalChannel.sub('AllReady', () => {
+        callDef(mainDef, _workerId);
+      })
+    } else {
+      throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
+    }
+  });
 
-const myApp3 = () => [
-  () => console.log('hello from main!', threadId, isMainThread),
-  {name: 'worker', func: () => console.log('hello From Worker!', threadId, isMainThread), scale: 5}
-];
+  unlessMainDo(() => {
+    const { name, workerId } = getWorkerInitArgv();
+    _name = name;
+    _workerId = workerId;
+    const thisDef = workerDefs.find((def) => def.name == name);
+    if (!thisDef) {
+      throw new Error(`Thread definition not found: ${name}`);
+    }
 
+    if (opts.startBehavior == 'all') {
+      globalChannel.sub('AllReady', () => {
+        callDef(thisDef.func, workerId);
+      })
+      // await opts.init?.(workerId);
+      // TODO: add support for per-def initializers _cool_
+      globalChannel.pub('WorkerReady', { workerId });
+    } else if (opts.startBehavior == 'each') {
+      // await opts.init?.(workerId);
+      globalChannel.pub('WorkerReady', { workerId });
+      console.log('worker ready', workerId, thisDef);
+      callDef(thisDef.func, workerId);
+    } else {
+      throw new Error(`Invalid start behavior: ${opts.startBehavior}`);
+    }
+  });
+
+  return {
+    __globalChannel: globalChannel,
+    __workerStatuses: workerStatuses,
+    workerName: _name,
+    workerId: _workerId,
+    isMain: isMainThread
+  }
+}
+
+// export function multi(n: number, def: TDef)
+
+// This should return a value that I can use to safely send messages to threads.
